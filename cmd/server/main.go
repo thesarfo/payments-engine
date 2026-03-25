@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
 	"github.com/thesarfo/payments-engine/api/handler"
+	apimiddleware "github.com/thesarfo/payments-engine/api/middleware"
 	"github.com/thesarfo/payments-engine/internal/account"
 )
 
@@ -35,13 +38,18 @@ func main() {
 	svc := account.NewService(repo)
 	h := handler.NewAccountHandler(svc)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/accounts", h.CreateAccount)
-	mux.HandleFunc("/api/v1/accounts/", h.GetAccountByID)
+	r := chi.NewRouter()
+	r.Use(chimiddleware.RequestID)
+	r.Use(chimiddleware.RealIP)
+	r.Use(apimiddleware.RequestLogger)
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/accounts", h.CreateAccount)
+		r.Get("/accounts/{id}", h.GetAccountByID)
+	})
 
 	addr := ":8080"
 	log.Printf("server listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatal(err)
 	}
 

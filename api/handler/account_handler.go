@@ -3,10 +3,10 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/account"
@@ -55,12 +55,7 @@ func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, dto.ErrorResponse{Error: "method not allowed"})
-		return
-	}
-
-	id, err := parseAccountID(r.URL.Path)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
 		return
@@ -85,25 +80,6 @@ func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) 
 		Status:   string(acc.Status),
 		Version:  acc.Version,
 	})
-}
-
-
-func parseAccountID(path string) (uuid.UUID, error) {
-	const prefix = "/api/v1/accounts/"
-	if !strings.HasPrefix(path, prefix) {
-		return uuid.Nil, fmt.Errorf("invalid account path")
-	}
-
-	raw := strings.TrimPrefix(path, prefix)
-	if raw == "" || strings.Contains(raw, "/") {
-		return uuid.Nil, fmt.Errorf("invalid account id")
-	}
-
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("invalid account id: %w", err)
-	}
-	return id, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
