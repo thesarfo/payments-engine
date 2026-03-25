@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/thesarfo/payments-engine/api/handler"
 	"github.com/thesarfo/payments-engine/internal/account"
 )
 
@@ -30,21 +32,17 @@ func main() {
 
 	repo := account.NewPostgresAccountRepository(pool)
 
-	created, err := repo.CreateAccount(ctx, account.Account{
-		Name:     "Cash",
-		Type:     account.AccountTypeAsset,
-		Currency: "USD",
-	})
-	if err != nil {
+	svc := account.NewService(repo)
+	h := handler.NewAccountHandler(svc)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/accounts", h.CreateAccount)
+	mux.HandleFunc("/api/v1/accounts/", h.GetAccountByID)
+
+	addr := ":8080"
+	log.Printf("server listening on %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("created %+v", created)
-
-	loaded, err := repo.GetAccountByID(ctx, created.ID)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("loaded %+v", loaded)
-
 
 }	
