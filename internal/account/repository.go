@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,22 +17,22 @@ import (
 
 var ErrAccountNotFound = errors.New("account not found")
 
-type Repository interface{
+type Repository interface {
 	CreateAccount(ctx context.Context, a Account) (Account, error)
 	GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error)
 }
 
-type PostgresAccountRepository struct{
+type AccountRepository struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresAccountRepository(pool *pgxpool.Pool) *PostgresAccountRepository{
-	return &PostgresAccountRepository{pool: pool}
+func NewAccountRepository(pool *pgxpool.Pool) *AccountRepository {
+	return &AccountRepository{pool: pool}
 }
 
 const insertAccountSQL = `
-INSERT INTO accounts (name, "type", currency, balance, status)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO accounts (code, name, "type", currency, balance, status, is_posting)
+VALUES ($1, $2, $3, $4, $5, $6, true)
 RETURNING id, name, "type", currency, balance, status, version
 `
 
@@ -40,17 +42,18 @@ FROM accounts
 WHERE id = $1
 `
 
-func (r *PostgresAccountRepository) CreateAccount(ctx context.Context, a Account) (Account, error){
-	if a.Name == ""{
+func (r *AccountRepository) CreateAccount(ctx context.Context, a Account) (Account, error) {
+	if a.Name == "" {
 		return Account{}, fmt.Errorf("account name is required")
 	}
 
 	status := a.Status
-	if status == ""{
+	if status == "" {
 		status = AccountStatusActive
 	}
 
 	row := r.pool.QueryRow(ctx, insertAccountSQL,
+		generateAccountCode(a.Name),
 		a.Name,
 		string(a.Type),
 		string(a.Currency),
@@ -65,7 +68,17 @@ func (r *PostgresAccountRepository) CreateAccount(ctx context.Context, a Account
 	return out, nil
 }
 
-func (r *PostgresAccountRepository) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
+func generateAccountCode(name string) string {
+	base := strings.ToUpper(strings.TrimSpace(name))
+	base = regexp.MustCompile(`[^A-Z0-9]+`).ReplaceAllString(base, "_")
+	base = strings.Trim(base, "_")
+	if base == "" {
+		base = "ACCOUNT"
+	}
+	return fmt.Sprintf("%s_%s", base, strings.ToUpper(uuid.NewString()[:8]))
+}
+
+func (r *AccountRepository) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
 	row := r.pool.QueryRow(ctx, selectAccountByIDSQL, id)
 	out, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
