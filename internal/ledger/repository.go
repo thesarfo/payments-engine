@@ -18,12 +18,98 @@ var (
 	ErrCurrencyMismatch = errors.New("currency mismatch")
 )
 
-type PostgresLedgerRepository struct {
+type LedgerRepository struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresLedgerRepository(pool *pgxpool.Pool) *PostgresLedgerRepository {
-	return &PostgresLedgerRepository{pool: pool}
+type AccountEntryRow struct {
+	EntryID          uuid.UUID
+	PostedAt         time.Time
+	EntryDescription string
+	Reference        string
+	EntryStatus      string
+	LineID           uuid.UUID
+	LineType         LineType
+	Amount           decimal.Decimal
+	LineDescription  string
+	Sequence         int16
+}
+
+func NewLedgerRepository(pool *pgxpool.Pool) *LedgerRepository {
+	return &LedgerRepository{pool: pool}
+}
+
+func (r *LedgerRepository) GetAccountEntryRows(ctx context.Context, accountID uuid.UUID) ([]AccountEntryRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			e.id,
+			e.posted_at,
+			e.description,
+			COALESCE(e.reference, ''),
+			e.status,
+			l.id,
+			l.type,
+			l.amount::text,
+			COALESCE(l.description, ''),
+			l.sequence
+		FROM journal_entry_lines l
+		JOIN journal_entries e ON e.id = l.entry_id
+		WHERE l.account_id = $1
+		ORDER BY e.posted_at DESC, l.sequence ASC
+	`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("query account entry rows: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]AccountEntryRow, 0)
+	for rows.Next() {
+		var (
+			row       AccountEntryRow
+			lineType  string
+			amountStr string
+		)
+		if err := rows.Scan(
+			&row.EntryID,
+			&row.PostedAt,
+			&row.EntryDescription,
+			&row.Reference,
+			&row.EntryStatus,
+			&row.LineID,
+			&lineType,
+			&amountStr,
+			&row.LineDescription,
+			&row.Sequence,
+		); err != nil {
+			return nil, fmt.Errorf("scan account entry row: %w", err)
+		}
+
+		amt, err := decimal.NewFromString(amountStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse row amount: %w", err)
+		}
+
+		row.LineType = LineType(lineType)
+		row.Amount = amt
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows account entries: %w", err)
+	}
+
+	if len(out) > 0 {
+		return out, nil
+	}
+
+	var exists int
+	err = r.pool.QueryRow(ctx, `SELECT 1 FROM accounts WHERE id = $1`, accountID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAccountNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check account existence: %w", err)
+	}
+	return out, nil
 }
 
 // InsertJournalEntry initiates a single transaction that:
@@ -32,7 +118,7 @@ func NewPostgresLedgerRepository(pool *pgxpool.Pool) *PostgresLedgerRepository {
 // 3. insert header
 // 4. insert lines
 // 5. compute/apply balance deltas
-func (r *PostgresLedgerRepository) InsertJournalEntry(ctx context.Context, entry JournalEntry) error {
+func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry JournalEntry) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -98,7 +184,7 @@ func collectAccountIDs(entry JournalEntry) []uuid.UUID {
 	return ids
 }
 
-func (r *PostgresLedgerRepository) loadAndLockAccounts(
+func (r *LedgerRepository) loadAndLockAccounts(
 	ctx context.Context,
 	tx pgx.Tx,
 	ids []uuid.UUID,
