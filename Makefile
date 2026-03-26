@@ -6,3 +6,7 @@ DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/payments_engine?sslm
 .PHONY: migrate
 migrate:
 	migrate -path ./migrations -database "$(DATABASE_URL)" up
+
+.PHONY: seed
+seed:
+	go run ./cmd/seed/main.go
