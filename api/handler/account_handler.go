@@ -10,15 +10,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/account"
+	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 type AccountHandler struct {
-	svc *account.Service
+	svc       *account.Service
+	ledgerSvc *ledger.Ledger
 }
 
-func NewAccountHandler(svc *account.Service) *AccountHandler {
-	return &AccountHandler{svc: svc}
+func NewAccountHandler(svc *account.Service, ledgerSvc *ledger.Ledger) *AccountHandler {
+	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc}
 }
 
 func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +82,42 @@ func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) 
 		Status:   string(acc.Status),
 		Version:  acc.Version,
 	})
+}
+
+func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
+		return
+	}
+
+	rows, err := h.ledgerSvc.GetAccountEntries(r.Context(), id)
+	if errors.Is(err, ledger.ErrAccountNotFound) {
+		writeJSON(w, http.StatusNotFound, dto.ErrorResponse{Error: "account not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	out := make([]dto.AccountEntryResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, dto.AccountEntryResponse{
+			EntryID:          row.EntryID.String(),
+			PostedAt:         row.PostedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			EntryDescription: row.EntryDescription,
+			Reference:        row.Reference,
+			EntryStatus:      row.EntryStatus,
+			LineID:           row.LineID.String(),
+			LineType:         string(row.LineType),
+			Amount:           row.Amount.StringFixed(4),
+			LineDescription:  row.LineDescription,
+			Sequence:         row.Sequence,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

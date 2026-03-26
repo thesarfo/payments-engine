@@ -14,6 +14,7 @@ import (
 	"github.com/thesarfo/payments-engine/api/handler"
 	apimiddleware "github.com/thesarfo/payments-engine/api/middleware"
 	"github.com/thesarfo/payments-engine/internal/account"
+	"github.com/thesarfo/payments-engine/internal/ledger"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func main() {
 
 	ctx := context.Background()
 	connString := os.Getenv("DATABASE_URL")
-	if connString == ""{
+	if connString == "" {
 		log.Fatal("database url is required")
 	}
 
@@ -33,10 +34,12 @@ func main() {
 	}
 	defer pool.Close()
 
-	repo := account.NewPostgresAccountRepository(pool)
+	accountRepo := account.NewAccountRepository(pool)
+	ledgerRepo := ledger.NewLedgerRepository(pool)
 
-	svc := account.NewService(repo)
-	h := handler.NewAccountHandler(svc)
+	svc := account.NewService(accountRepo)
+	ledgerSvc := ledger.NewLedger(ledgerRepo)
+	h := handler.NewAccountHandler(svc, ledgerSvc)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID)
@@ -45,6 +48,7 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/accounts", h.CreateAccount)
 		r.Get("/accounts/{id}", h.GetAccountByID)
+		r.Get("/accounts/{id}/entries", h.GetAccountEntries)
 	})
 
 	addr := ":8080"
@@ -53,4 +57,4 @@ func main() {
 		log.Fatal(err)
 	}
 
-}	
+}

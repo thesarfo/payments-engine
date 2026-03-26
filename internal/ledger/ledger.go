@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
-// ErrUnbalancedEntry is returned when total debits != total credits.
 var ErrUnbalancedEntry = errors.New("unbalanced journal entry: total debits must equal total credits")
+var ErrEntriesQueryNotSupported = errors.New("entries query not supported by repository")
 
-// Repository is the persistence port for the ledger engine.
 type Repository interface {
 	InsertJournalEntry(ctx context.Context, entry JournalEntry) error
+}
+
+type accountEntriesReader interface {
+	GetAccountEntryRows(ctx context.Context, accountID uuid.UUID) ([]AccountEntryRow, error)
 }
 
 type Ledger struct {
@@ -26,7 +30,6 @@ func NewLedger(repo Repository) *Ledger {
 // PostJournalEntry enforces double-entry invariants and delegates to the repository
 // to persist the entry atomically (header + lines + balance updates).
 func (l *Ledger) PostJournalEntry(ctx context.Context, entry JournalEntry) error {
-	// 1) Debits == credits (amounts are positive; type determines side).
 	totalDebits := decimal.Zero
 	totalCredits := decimal.Zero
 
@@ -45,7 +48,13 @@ func (l *Ledger) PostJournalEntry(ctx context.Context, entry JournalEntry) error
 		return ErrUnbalancedEntry
 	}
 
-	// 2) + 3) The repository performs: accounts exist + ACTIVE checks,
-	// and transactionally inserts entry/lines and updates balances.
 	return l.repo.InsertJournalEntry(ctx, entry)
+}
+
+func (l *Ledger) GetAccountEntries(ctx context.Context, accountID uuid.UUID) ([]AccountEntryRow, error) {
+	reader, ok := l.repo.(accountEntriesReader)
+	if !ok {
+		return nil, ErrEntriesQueryNotSupported
+	}
+	return reader.GetAccountEntryRows(ctx, accountID)
 }
