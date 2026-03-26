@@ -28,7 +28,7 @@ func TestLedger_PostJournalEntry_Balanced(t *testing.T) {
 	entry := JournalEntry{
 		ID:          uuid.New(),
 		Description: "balanced entry",
-		Currency:    "USD",
+		Currency:    "GHS",
 		PostedBy:    "test",
 		Lines: []JournalEntryLine{
 			{
@@ -59,7 +59,7 @@ func TestLedger_PostJournalEntry_Unbalanced(t *testing.T) {
 	entry := JournalEntry{
 		ID:          uuid.New(),
 		Description: "unbalanced entry",
-		Currency:    "USD",
+		Currency:    "GHS",
 		PostedBy:    "test",
 		Lines: []JournalEntryLine{
 			{
@@ -91,7 +91,7 @@ func TestLedger_PostJournalEntry_InvalidLineType(t *testing.T) {
 	entry := JournalEntry{
 		ID:          uuid.New(),
 		Description: "invalid line type",
-		Currency:    "USD",
+		Currency:    "GHS",
 		PostedBy:    "test",
 		Lines: []JournalEntryLine{
 			{
