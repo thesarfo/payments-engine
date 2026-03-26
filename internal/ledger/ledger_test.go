@@ -3,11 +3,37 @@ package ledger
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
+
+var invariantDB *pgxpool.Pool
+
+func TestMain(m *testing.M) {
+	url := os.Getenv("DATABASE_URL")
+	if url != "" {
+		pool, err := pgxpool.New(context.Background(), url)
+		if err == nil {
+			invariantDB = pool
+			defer invariantDB.Close()
+		}
+	}
+	os.Exit(m.Run())
+}
+
+func assertInvariantAfterTest(t *testing.T) {
+	t.Helper()
+	if invariantDB == nil {
+		return
+	}
+	t.Cleanup(func() {
+		AssertLedgerBalanced(t, invariantDB)
+	})
+}
 
 type fakeRepo struct {
 	err   error
@@ -22,6 +48,7 @@ func (f *fakeRepo) InsertJournalEntry(_ context.Context, entry JournalEntry) err
 }
 
 func TestLedger_PostJournalEntry_Balanced(t *testing.T) {
+	assertInvariantAfterTest(t)
 	repo := &fakeRepo{}
 	l := NewLedger(repo)
 
@@ -53,6 +80,7 @@ func TestLedger_PostJournalEntry_Balanced(t *testing.T) {
 }
 
 func TestLedger_PostJournalEntry_Unbalanced(t *testing.T) {
+	assertInvariantAfterTest(t)
 	repo := &fakeRepo{}
 	l := NewLedger(repo)
 
@@ -85,6 +113,7 @@ func TestLedger_PostJournalEntry_Unbalanced(t *testing.T) {
 }
 
 func TestLedger_PostJournalEntry_InvalidLineType(t *testing.T) {
+	assertInvariantAfterTest(t)
 	repo := &fakeRepo{}
 	l := NewLedger(repo)
 
@@ -113,4 +142,3 @@ func TestLedger_PostJournalEntry_InvalidLineType(t *testing.T) {
 		t.Fatalf("expected repo.InsertJournalEntry not to be called, got %d calls", repo.calls)
 	}
 }
-
