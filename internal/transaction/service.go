@@ -12,6 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
+	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 const (
@@ -68,6 +69,10 @@ func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...ide
 func (s *TransferService) WithClearingCode(code string) *TransferService {
 	s.clearingCode = code
 	return s
+}
+
+func (s *TransferService) GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error) {
+	return s.repo.GetTransactionByID(ctx, txID)
 }
 
 func (s *TransferService) idempotencyTransferKey(idempotencyKey string) string {
@@ -174,13 +179,22 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	if err != nil {
 		return nil, fmt.Errorf("load destination account: %w", err)
 	}
-	if fromAcc.Currency != req.Currency || toAcc.Currency != req.Currency {
+	requestedAmount := money.FromDecimal(req.Amount, money.Currency(req.Currency))
+	sourceBalance := money.FromDecimal(fromAcc.Balance, money.Currency(fromAcc.Currency))
+	destinationBalance := money.FromDecimal(toAcc.Balance, money.Currency(toAcc.Currency))
+
+	if !sourceBalance.SameCurrency(requestedAmount) || !destinationBalance.SameCurrency(requestedAmount) {
 		return nil, ErrCurrencyMismatch
 	}
 	if fromAcc.Status != "ACTIVE" || toAcc.Status != "ACTIVE" {
 		return nil, fmt.Errorf("%w: accounts must be ACTIVE", ErrInvalidTransfer)
 	}
-	if fromAcc.Balance.LessThan(req.Amount) {
+
+	insufficient, err := sourceBalance.LessThan(requestedAmount)
+	if err != nil {
+		return nil, ErrCurrencyMismatch
+	}
+	if insufficient {
 		return nil, ErrInsufficientFunds
 	}
 
@@ -191,19 +205,22 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	if err != nil {
 		return nil, fmt.Errorf("load clearing account: %w", err)
 	}
-	if clearingAcc.Currency != req.Currency {
+	clearingBalance := money.FromDecimal(clearingAcc.Balance, money.Currency(clearingAcc.Currency))
+	if !clearingBalance.SameCurrency(requestedAmount) {
 		return nil, ErrCurrencyMismatch
 	}
 	if clearingAcc.Status != "ACTIVE" {
 		return nil, fmt.Errorf("%w: clearing account not ACTIVE", ErrInvalidTransfer)
 	}
 
+	amountValue := requestedAmount.Amount()
+	currencyCode := string(requestedAmount.Currency())
 	tx := Transaction{
 		IdempotencyKey: req.IdempotencyKey,
 		FromAccountID:  req.FromAccountId,
 		ToAccountID:    req.ToAccountId,
-		Amount:         req.Amount,
-		Currency:       req.Currency,
+		Amount:         amountValue,
+		Currency:       currencyCode,
 		Status:         TxStatusPending,
 		Description:    req.Description,
 		Rail:           req.Rail,
@@ -211,6 +228,16 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 
 	created, err := s.repo.CreateTransaction(ctx, tx)
 	if err != nil {
+		if errors.Is(err, ErrDuplicateIdempotencyKey) {
+			existing, getErr := s.repo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+			if getErr == nil {
+				return &existing, nil
+			}
+			if errors.Is(getErr, ErrTransactionNotFound) {
+				return nil, ErrTransferInProgress
+			}
+			return nil, fmt.Errorf("lookup duplicate idempotency key: %w", getErr)
+		}
 		return nil, fmt.Errorf("create transaction: %w", err)
 	}
 
@@ -231,11 +258,11 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	clearingEntry := ledger.JournalEntry{
 		TransactionId: created.ID,
 		Description:   "transfer clearing",
-		Currency:      req.Currency,
+		Currency:      currencyCode,
 		PostedBy:      s.postedBy,
 		Lines: []ledger.JournalEntryLine{
-			{AccountId: req.FromAccountId, Type: ledger.LineTypeDebit, Amount: req.Amount, Sequence: 1},
-			{AccountId: clearingAcc.ID, Type: ledger.LineTypeCredit, Amount: req.Amount, Sequence: 2},
+			{AccountId: req.FromAccountId, Type: ledger.LineTypeDebit, Amount: amountValue, Sequence: 1},
+			{AccountId: clearingAcc.ID, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
 	if err := s.ledger.PostJournalEntry(ctx, clearingEntry); err != nil {
@@ -265,11 +292,11 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	settlementEntry := ledger.JournalEntry{
 		TransactionId: created.ID,
 		Description:   "transfer settlement",
-		Currency:      req.Currency,
+		Currency:      currencyCode,
 		PostedBy:      s.postedBy,
 		Lines: []ledger.JournalEntryLine{
-			{AccountId: clearingAcc.ID, Type: ledger.LineTypeDebit, Amount: req.Amount, Sequence: 1},
-			{AccountId: req.ToAccountId, Type: ledger.LineTypeCredit, Amount: req.Amount, Sequence: 2},
+			{AccountId: clearingAcc.ID, Type: ledger.LineTypeDebit, Amount: amountValue, Sequence: 1},
+			{AccountId: req.ToAccountId, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
 	if err := s.ledger.PostJournalEntry(ctx, settlementEntry); err != nil {
@@ -298,10 +325,12 @@ func validateTransferRequest(req TransferRequest) error {
 	if req.FromAccountId == req.ToAccountId {
 		return fmt.Errorf("%w: source and destination must differ", ErrInvalidTransfer)
 	}
-	if !req.Amount.GreaterThan(decimal.Zero) {
+	normalizedCurrency := strings.ToUpper(strings.TrimSpace(req.Currency))
+	transferAmount := money.FromDecimal(req.Amount, money.Currency(normalizedCurrency))
+	if !transferAmount.IsPositive() {
 		return fmt.Errorf("%w: amount must be > 0", ErrInvalidTransfer)
 	}
-	if strings.TrimSpace(req.Currency) == "" {
+	if normalizedCurrency == "" {
 		return fmt.Errorf("%w: currency is required", ErrInvalidTransfer)
 	}
 	return nil

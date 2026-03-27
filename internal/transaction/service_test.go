@@ -13,14 +13,18 @@ import (
 )
 
 type fakeRepo struct {
-	accounts map[uuid.UUID]AccountSnapshot
-	byCode   map[string]AccountSnapshot
-	tx       Transaction
-	creates  int
-	fails    int
+	accounts  map[uuid.UUID]AccountSnapshot
+	byCode    map[string]AccountSnapshot
+	tx        Transaction
+	createErr error
+	creates   int
+	fails     int
 }
 
 func (f *fakeRepo) CreateTransaction(_ context.Context, tx Transaction) (Transaction, error) {
+	if f.createErr != nil {
+		return Transaction{}, f.createErr
+	}
 	f.creates++
 	tx.ID = uuid.New()
 	tx.CreatedAt = time.Now()
@@ -34,6 +38,20 @@ func (f *fakeRepo) FailTransaction(_ context.Context, _ uuid.UUID, reason string
 	f.tx.Status = TxStatusFailed
 	f.tx.FailureReason = &reason
 	f.tx.UpdatedAt = time.Now()
+	return f.tx, nil
+}
+
+func (f *fakeRepo) GetTransactionByID(_ context.Context, txID uuid.UUID) (Transaction, error) {
+	if f.tx.ID == uuid.Nil || f.tx.ID != txID {
+		return Transaction{}, ErrTransactionNotFound
+	}
+	return f.tx, nil
+}
+
+func (f *fakeRepo) GetTransactionByIdempotencyKey(_ context.Context, idempotencyKey string) (Transaction, error) {
+	if f.tx.ID == uuid.Nil || f.tx.IdempotencyKey != idempotencyKey {
+		return Transaction{}, ErrTransactionNotFound
+	}
 	return f.tx, nil
 }
 
@@ -179,6 +197,34 @@ func TestTransfer_InsufficientFunds(t *testing.T) {
 	}
 }
 
+func TestTransfer_CurrencyMismatch(t *testing.T) {
+	fromID := uuid.New()
+	toID := uuid.New()
+	clearingID := uuid.New()
+
+	repo := &fakeRepo{
+		accounts: map[uuid.UUID]AccountSnapshot{
+			fromID: {ID: fromID, Currency: "GHS", Balance: decimal.RequireFromString("100.0000"), Status: "ACTIVE"},
+			toID:   {ID: toID, Currency: "USD", Balance: decimal.RequireFromString("0.0000"), Status: "ACTIVE"},
+		},
+		byCode: map[string]AccountSnapshot{
+			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
+		},
+	}
+	svc := NewTransferService(repo, ledger.NewLedger(&fakeLedgerRepo{}))
+
+	_, err := svc.Transfer(context.Background(), TransferRequest{
+		IdempotencyKey: "idem-currency-mismatch",
+		FromAccountId:  fromID,
+		ToAccountId:    toID,
+		Amount:         decimal.RequireFromString("10.0000"),
+		Currency:       "GHS",
+	})
+	if !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("expected ErrCurrencyMismatch, got %v", err)
+	}
+}
+
 // TestTransfer_RacePathInsufficientFunds simulates the window where the fast-path
 // check passes (stale snapshot shows enough balance) but the ledger's post-lock
 // check fires ErrInsufficientFunds. The transaction must land in FAILED state,
@@ -271,3 +317,79 @@ func TestTransfer_DuplicateRequestReturnsOriginalTransaction(t *testing.T) {
 	}
 }
 
+func TestTransfer_DuplicateIdempotencyKeyWithoutStoreReturnsExisting(t *testing.T) {
+	fromID := uuid.New()
+	toID := uuid.New()
+	existingID := uuid.New()
+	existing := Transaction{
+		ID:             existingID,
+		IdempotencyKey: "dup-db-key-1",
+		FromAccountID:  fromID,
+		ToAccountID:    toID,
+		Amount:         decimal.RequireFromString("25.0000"),
+		Currency:       "GHS",
+		Status:         TxStatusSettled,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	repo := &fakeRepo{
+		createErr: ErrDuplicateIdempotencyKey,
+		tx:        existing,
+		accounts: map[uuid.UUID]AccountSnapshot{
+			fromID: {ID: fromID, Currency: "GHS", Balance: decimal.RequireFromString("100.0000"), Status: "ACTIVE"},
+			toID:   {ID: toID, Currency: "GHS", Balance: decimal.RequireFromString("0.0000"), Status: "ACTIVE"},
+		},
+		byCode: map[string]AccountSnapshot{
+			DefaultClearingCode: {ID: uuid.New(), Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
+		},
+	}
+	svc := NewTransferService(repo, ledger.NewLedger(&fakeLedgerRepo{}))
+
+	got, err := svc.Transfer(context.Background(), TransferRequest{
+		IdempotencyKey: "dup-db-key-1",
+		FromAccountId:  fromID,
+		ToAccountId:    toID,
+		Amount:         decimal.RequireFromString("25.0000"),
+		Currency:       "GHS",
+	})
+	if err != nil {
+		t.Fatalf("Transfer() unexpected error: %v", err)
+	}
+	if got.ID != existingID {
+		t.Fatalf("expected existing transaction id %s, got %s", existingID, got.ID)
+	}
+	if repo.creates != 0 {
+		t.Fatalf("expected no successful creates, got %d", repo.creates)
+	}
+}
+
+func TestGetTransactionByID(t *testing.T) {
+	repo := &fakeRepo{
+		tx: Transaction{
+			ID:             uuid.New(),
+			IdempotencyKey: "idem-get",
+			Status:         TxStatusProcessing,
+			Amount:         decimal.RequireFromString("10.0000"),
+			Currency:       "GHS",
+		},
+	}
+	svc := NewTransferService(repo, nil)
+
+	got, err := svc.GetTransactionByID(context.Background(), repo.tx.ID)
+	if err != nil {
+		t.Fatalf("GetTransactionByID() unexpected error: %v", err)
+	}
+	if got.ID != repo.tx.ID {
+		t.Fatalf("expected tx id %s, got %s", repo.tx.ID, got.ID)
+	}
+}
+
+func TestGetTransactionByID_NotFound(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewTransferService(repo, nil)
+
+	_, err := svc.GetTransactionByID(context.Background(), uuid.New())
+	if !errors.Is(err, ErrTransactionNotFound) {
+		t.Fatalf("expected ErrTransactionNotFound, got %v", err)
+	}
+}

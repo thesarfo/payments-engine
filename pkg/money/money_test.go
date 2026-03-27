@@ -3,6 +3,8 @@ package money
 import (
 	"strings"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func mustMoney(t *testing.T, amount string, currency Currency) Money {
@@ -176,5 +178,61 @@ func TestMoney_String(t *testing.T) {
 	m := mustMoney(t, "1234.5", "GHS")
 	if got := m.String(); got != "1234.50 GHS" {
 		t.Errorf("String() = %q, want %q", got, "1234.50 GHS")
+	}
+}
+
+func TestFromDecimalAndAccessors(t *testing.T) {
+	input := decimal.RequireFromString("42.2500")
+	m := FromDecimal(input, "GHS")
+
+	if !m.Amount().Equal(input) {
+		t.Fatalf("Amount() = %s, want %s", m.Amount(), input)
+	}
+	if m.Currency() != "GHS" {
+		t.Fatalf("Currency() = %s, want GHS", m.Currency())
+	}
+}
+
+func TestMoney_ComparisonHelpers(t *testing.T) {
+	a := mustMoney(t, "100.0000", "GHS")
+	b := mustMoney(t, "50.0000", "GHS")
+
+	gt, err := a.GreaterThan(b)
+	if err != nil {
+		t.Fatalf("GreaterThan() unexpected error: %v", err)
+	}
+	if !gt {
+		t.Fatal("GreaterThan() = false, want true")
+	}
+
+	lt, err := b.LessThan(a)
+	if err != nil {
+		t.Fatalf("LessThan() unexpected error: %v", err)
+	}
+	if !lt {
+		t.Fatal("LessThan() = false, want true")
+	}
+
+	if !mustMoney(t, "-1.0000", "GHS").IsNegative() {
+		t.Fatal("IsNegative() = false for negative amount")
+	}
+}
+
+func TestMoney_ComparisonCurrencyMismatch(t *testing.T) {
+	a := mustMoney(t, "10.0000", "GHS")
+	b := mustMoney(t, "10.0000", "USD")
+
+	if a.SameCurrency(b) {
+		t.Fatal("SameCurrency() = true, want false")
+	}
+
+	if _, err := a.Cmp(b); err == nil || !strings.Contains(err.Error(), "currency mismatch") {
+		t.Fatalf("Cmp() error = %v, want currency mismatch", err)
+	}
+	if _, err := a.LessThan(b); err == nil || !strings.Contains(err.Error(), "currency mismatch") {
+		t.Fatalf("LessThan() error = %v, want currency mismatch", err)
+	}
+	if _, err := a.GreaterThan(b); err == nil || !strings.Contains(err.Error(), "currency mismatch") {
+		t.Fatalf("GreaterThan() error = %v, want currency mismatch", err)
 	}
 }

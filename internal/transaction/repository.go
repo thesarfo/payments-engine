@@ -9,14 +9,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 var (
-	ErrTransactionNotFound = errors.New("transaction not found")
-	ErrInvalidStatusUpdate = errors.New("invalid transaction status transition")
-	ErrAccountNotFound     = errors.New("account not found")
+	ErrTransactionNotFound     = errors.New("transaction not found")
+	ErrInvalidStatusUpdate     = errors.New("invalid transaction status transition")
+	ErrAccountNotFound         = errors.New("account not found")
+	ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency key")
 )
 
 type PostgresRepository struct {
@@ -37,10 +39,9 @@ type AccountSnapshot struct {
 type Repository interface {
 	CreateTransaction(ctx context.Context, tx Transaction) (Transaction, error)
 	UpdateStatus(ctx context.Context, txID uuid.UUID, from TxStatus, to TxStatus, settledAt *time.Time) (Transaction, error)
-	// FailTransaction transitions any PENDING or PROCESSING transaction to FAILED
-	// and writes the reason. It is safe to call when the current status is already
-	// FAILED (returns the existing row without error).
 	FailTransaction(ctx context.Context, txID uuid.UUID, reason string) (Transaction, error)
+	GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error)
+	GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (Transaction, error)
 	GetAccountSnapshot(ctx context.Context, accountID uuid.UUID) (AccountSnapshot, error)
 	GetAccountByCode(ctx context.Context, code string) (AccountSnapshot, error)
 }
@@ -161,6 +162,29 @@ FROM transactions
 WHERE id = $1
 `
 
+const selectTransactionByIdempotencyKeySQL = `
+SELECT
+	id,
+	idempotency_key,
+	from_account_id,
+	to_account_id,
+	amount::text,
+	currency,
+	status,
+	description,
+	metadata,
+	rail,
+	external_ref,
+	failure_reason,
+	journal_entry_id,
+	created_at,
+	updated_at,
+	settled_at,
+	expires_at
+FROM transactions
+WHERE idempotency_key = $1
+`
+
 const selectAccountSnapshotByIDSQL = `
 SELECT id, COALESCE(code, ''), name, type, currency, balance::text, status, version
 FROM accounts
@@ -190,6 +214,10 @@ func (r *PostgresRepository) CreateTransaction(ctx context.Context, tx Transacti
 	)
 	out, err := scanTransactionRow(row)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return Transaction{}, ErrDuplicateIdempotencyKey
+		}
 		return Transaction{}, fmt.Errorf("create transaction: %w", err)
 	}
 	return out, nil
@@ -217,7 +245,7 @@ func (r *PostgresRepository) FailTransaction(ctx context.Context, txID uuid.UUID
 	row := r.pool.QueryRow(ctx, failTransactionSQL, txID, reason)
 	out, err := scanTransactionRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-	
+
 		row = r.pool.QueryRow(ctx, selectTransactionByIDSQL, txID)
 		out, err = scanTransactionRow(row)
 		if err != nil {
@@ -227,6 +255,30 @@ func (r *PostgresRepository) FailTransaction(ctx context.Context, txID uuid.UUID
 	}
 	if err != nil {
 		return Transaction{}, fmt.Errorf("fail transaction: %w", err)
+	}
+	return out, nil
+}
+
+func (r *PostgresRepository) GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error) {
+	row := r.pool.QueryRow(ctx, selectTransactionByIDSQL, txID)
+	out, err := scanTransactionRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transaction{}, ErrTransactionNotFound
+	}
+	if err != nil {
+		return Transaction{}, fmt.Errorf("get transaction by id: %w", err)
+	}
+	return out, nil
+}
+
+func (r *PostgresRepository) GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (Transaction, error) {
+	row := r.pool.QueryRow(ctx, selectTransactionByIdempotencyKeySQL, idempotencyKey)
+	out, err := scanTransactionRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transaction{}, ErrTransactionNotFound
+	}
+	if err != nil {
+		return Transaction{}, fmt.Errorf("get transaction by idempotency key: %w", err)
 	}
 	return out, nil
 }
