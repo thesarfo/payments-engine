@@ -10,49 +10,48 @@ import (
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
-type Service struct {
+type AccountService struct {
 	repo Repository
 }
 
-type CreateAccountInput struct{
-	Name string 
-	Type AccountType
+type CreateAccountInput struct {
+	Name     string
+	Type     AccountType
 	Currency money.Currency
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewAccountService(repo Repository) *AccountService {
+	return &AccountService{repo: repo}
 }
 
-func (s *Service) CreateAccount(ctx context.Context, input CreateAccountInput) (Account, error) {
+func (s *AccountService) CreateAccount(ctx context.Context, input CreateAccountInput) (Account, error) {
 	name := strings.TrimSpace(input.Name)
 
-	if name == ""{
+	if name == "" {
 		return Account{}, fmt.Errorf("name is required")
 	}
-	if !isValidAccountType(input.Type){
+	if !isValidAccountType(input.Type) {
 		return Account{}, fmt.Errorf("invalid account type")
 	}
 
-	if !isValidISO4217Currency(input.Currency){
+	if !isValidISO4217Currency(input.Currency) {
 		return Account{}, fmt.Errorf("invalid currency code")
 	}
 
 	acc := Account{
-		Name: name,
-		Type: input.Type,
+		Name:     name,
+		Type:     input.Type,
 		Currency: input.Currency,
-		Balance: decimal.Zero,
-		Status: AccountStatusActive,
+		Balance:  decimal.Zero,
+		Status:   AccountStatusActive,
 	}
 
 	return s.repo.CreateAccount(ctx, acc)
 }
 
-func (s *Service) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
+func (s *AccountService) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
 	return s.repo.GetAccountByID(ctx, id)
 }
-
 
 func isValidISO4217Currency(currency money.Currency) bool {
 	code := string(currency)
@@ -70,11 +69,11 @@ func isValidISO4217Currency(currency money.Currency) bool {
 	}
 }
 
-func isValidAccountType(t AccountType) bool{
-	switch t{
-		case AccountTypeAsset, AccountTypeLiability, AccountTypeEquity, AccountTypeIncome, AccountTypeExpense:
-			return true
-		default:
-			return false
+func isValidAccountType(t AccountType) bool {
+	switch t {
+	case AccountTypeAsset, AccountTypeLiability, AccountTypeEquity, AccountTypeIncome, AccountTypeExpense:
+		return true
+	default:
+		return false
 	}
 }
