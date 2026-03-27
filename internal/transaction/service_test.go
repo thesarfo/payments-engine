@@ -17,6 +17,7 @@ type fakeRepo struct {
 	byCode   map[string]AccountSnapshot
 	tx       Transaction
 	creates  int
+	fails    int
 }
 
 func (f *fakeRepo) CreateTransaction(_ context.Context, tx Transaction) (Transaction, error) {
@@ -26,6 +27,14 @@ func (f *fakeRepo) CreateTransaction(_ context.Context, tx Transaction) (Transac
 	tx.UpdatedAt = tx.CreatedAt
 	f.tx = tx
 	return tx, nil
+}
+
+func (f *fakeRepo) FailTransaction(_ context.Context, _ uuid.UUID, reason string) (Transaction, error) {
+	f.fails++
+	f.tx.Status = TxStatusFailed
+	f.tx.FailureReason = &reason
+	f.tx.UpdatedAt = time.Now()
+	return f.tx, nil
 }
 
 type fakeIdemStore struct {
@@ -87,11 +96,15 @@ func (f *fakeRepo) GetAccountByCode(_ context.Context, code string) (AccountSnap
 }
 
 type fakeLedgerRepo struct {
+	err     error
 	calls   int
 	entries []ledger.JournalEntry
 }
 
 func (f *fakeLedgerRepo) InsertJournalEntry(_ context.Context, entry ledger.JournalEntry) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.calls++
 	f.entries = append(f.entries, entry)
 	return nil
@@ -158,6 +171,57 @@ func TestTransfer_InsufficientFunds(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
+	}
+	// The fast-path check catches this before a transaction is even created,
+	// so there is nothing to transition to FAILED. Verify no create occurred.
+	if repo.creates != 0 {
+		t.Fatalf("expected no transaction created for fast-path insufficient-funds, got %d", repo.creates)
+	}
+}
+
+// TestTransfer_RacePathInsufficientFunds simulates the window where the fast-path
+// check passes (stale snapshot shows enough balance) but the ledger's post-lock
+// check fires ErrInsufficientFunds. The transaction must land in FAILED state,
+// not be left orphaned in PENDING.
+func TestTransfer_RacePathInsufficientFunds(t *testing.T) {
+	fromID := uuid.New()
+	toID := uuid.New()
+	clearingID := uuid.New()
+
+	repo := &fakeRepo{
+		accounts: map[uuid.UUID]AccountSnapshot{
+			// Snapshot shows 200 — enough for the fast-path check to pass.
+			fromID: {ID: fromID, Currency: "GHS", Balance: decimal.RequireFromString("200.0000"), Status: "ACTIVE"},
+			toID:   {ID: toID, Currency: "GHS", Balance: decimal.RequireFromString("0.0000"), Status: "ACTIVE"},
+		},
+		byCode: map[string]AccountSnapshot{
+			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
+		},
+	}
+
+	// Ledger repo returns ErrInsufficientFunds, simulating the locked balance check.
+	ledgerRepo := &fakeLedgerRepo{err: ledger.ErrInsufficientFunds}
+	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo))
+
+	_, err := svc.Transfer(context.Background(), TransferRequest{
+		IdempotencyKey: "race-idem-1",
+		FromAccountId:  fromID,
+		ToAccountId:    toID,
+		Amount:         decimal.RequireFromString("200.0000"),
+		Currency:       "GHS",
+	})
+	if !errors.Is(err, ErrInsufficientFunds) {
+		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
+	}
+	// A PENDING transaction was created (fast-path passed), so it must be failed.
+	if repo.creates != 1 {
+		t.Fatalf("expected 1 transaction created, got %d", repo.creates)
+	}
+	if repo.fails != 1 {
+		t.Fatalf("expected FailTransaction called once, got %d", repo.fails)
+	}
+	if repo.tx.Status != TxStatusFailed {
+		t.Fatalf("expected transaction status FAILED, got %s", repo.tx.Status)
 	}
 }
 

@@ -213,6 +213,24 @@ func (r *PostgresRepository) UpdateStatus(
 	return out, nil
 }
 
+func (r *PostgresRepository) FailTransaction(ctx context.Context, txID uuid.UUID, reason string) (Transaction, error) {
+	row := r.pool.QueryRow(ctx, failTransactionSQL, txID, reason)
+	out, err := scanTransactionRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+	
+		row = r.pool.QueryRow(ctx, selectTransactionByIDSQL, txID)
+		out, err = scanTransactionRow(row)
+		if err != nil {
+			return Transaction{}, fmt.Errorf("fail transaction (fetch terminal): %w", err)
+		}
+		return out, nil
+	}
+	if err != nil {
+		return Transaction{}, fmt.Errorf("fail transaction: %w", err)
+	}
+	return out, nil
+}
+
 func (r *PostgresRepository) GetAccountSnapshot(ctx context.Context, accountID uuid.UUID) (AccountSnapshot, error) {
 	row := r.pool.QueryRow(ctx, selectAccountSnapshotByIDSQL, accountID)
 	return scanAccountSnapshot(row)

@@ -214,6 +214,20 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		return nil, fmt.Errorf("create transaction: %w", err)
 	}
 
+	// failTx transitions to FAILED, writes the reason, caches the outcome in the
+	// idempotency store, and clears the in-progress lock so the defer doesn't
+	// delete the final cached payload. It returns the original error unchanged so
+	// callers can still propagate the right sentinel (e.g. ErrInsufficientFunds).
+	failTx := func(reason string, returnErr error) (*Transaction, error) {
+		failed, ferr := s.repo.FailTransaction(ctx, created.ID, reason)
+		if ferr != nil {
+			return nil, fmt.Errorf("%w (additionally, fail-transition error: %v)", returnErr, ferr)
+		}
+		_ = s.idempotencyStoreResult(ctx, idemKey, failed)
+		idemLocked = false
+		return nil, returnErr
+	}
+
 	clearingEntry := ledger.JournalEntry{
 		TransactionId: created.ID,
 		Description:   "transfer clearing",
@@ -226,14 +240,14 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	}
 	if err := s.ledger.PostJournalEntry(ctx, clearingEntry); err != nil {
 		if errors.Is(err, ledger.ErrInsufficientFunds) {
-			return nil, ErrInsufficientFunds
+			return failTx("insufficient funds", ErrInsufficientFunds)
 		}
-		return nil, fmt.Errorf("post clearing entry: %w", err)
+		return failTx(err.Error(), fmt.Errorf("post clearing entry: %w", err))
 	}
 
 	processing, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusPending, TxStatusProcessing, nil)
 	if err != nil {
-		return nil, fmt.Errorf("transition to PROCESSING: %w", err)
+		return failTx(err.Error(), fmt.Errorf("transition to PROCESSING: %w", err))
 	}
 
 	rail := InternalRail
@@ -259,13 +273,13 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		},
 	}
 	if err := s.ledger.PostJournalEntry(ctx, settlementEntry); err != nil {
-		return nil, fmt.Errorf("post settlement entry: %w", err)
+		return failTx(err.Error(), fmt.Errorf("post settlement entry: %w", err))
 	}
 
 	now := time.Now()
 	settled, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusProcessing, TxStatusSettled, &now)
 	if err != nil {
-		return nil, fmt.Errorf("transition to SETTLED: %w", err)
+		return failTx(err.Error(), fmt.Errorf("transition to SETTLED: %w", err))
 	}
 	if err := s.idempotencyStoreResult(ctx, idemKey, settled); err != nil {
 		return nil, err

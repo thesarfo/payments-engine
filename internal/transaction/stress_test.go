@@ -138,11 +138,37 @@ func TestTransfer_StressConcurrent20(t *testing.T) {
 			ErnestFinal, SarfoFinal, initialBalance)
 	}
 
+	// No transaction may be left in PENDING — every failure must have been
+	// transitioned to FAILED so the system has a definitive, observable outcome.
+	var pendingCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM transactions
+		WHERE (from_account_id = $1 OR to_account_id = $1)
+		  AND status = 'PENDING'
+	`, ErnestID).Scan(&pendingCount); err != nil {
+		t.Fatalf("query pending count: %v", err)
+	}
+	if pendingCount != 0 {
+		t.Errorf("found %d orphaned PENDING transactions — failures must transition to FAILED", pendingCount)
+	}
+
+	// The number of SETTLED transactions must match the success count.
+	var settledCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM transactions
+		WHERE from_account_id = $1 AND status = 'SETTLED'
+	`, ErnestID).Scan(&settledCount); err != nil {
+		t.Fatalf("query settled count: %v", err)
+	}
+	if settledCount != successCount {
+		t.Errorf("SETTLED count (%d) != success count (%d)", settledCount, successCount)
+	}
+
 	// Ledger-level double-entry invariant
 	ledger.AssertLedgerBalanced(t, pool)
 
-	t.Logf("stress test: %d/%d transfers succeeded | Ernest: %s → %s | Sarfo: 0 → %s",
-		successCount, workers, initialBalance, ErnestFinal, SarfoFinal)
+	t.Logf("stress test: %d/%d transfers succeeded | %d FAILED | 0 PENDING orphans | Ernest: %s → %s | Sarfo: 0 → %s",
+		successCount, workers, workers-successCount, initialBalance, ErnestFinal, SarfoFinal)
 }
 
 // cleanupStressAccounts removes test data in FK-safe order.
