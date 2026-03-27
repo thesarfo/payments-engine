@@ -37,7 +37,7 @@ func main() {
 	accountRepo := account.NewAccountRepository(pool)
 	ledgerRepo := ledger.NewLedgerRepository(pool)
 
-	svc := account.NewService(accountRepo)
+	svc := account.NewAccountService(accountRepo)
 	ledgerSvc := ledger.NewLedger(ledgerRepo)
 	h := handler.NewAccountHandler(svc, ledgerSvc)
 

@@ -15,11 +15,11 @@ import (
 )
 
 type AccountHandler struct {
-	svc       *account.Service
+	svc       *account.AccountService
 	ledgerSvc *ledger.Ledger
 }
 
-func NewAccountHandler(svc *account.Service, ledgerSvc *ledger.Ledger) *AccountHandler {
+func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger) *AccountHandler {
 	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc}
 }
 
