@@ -37,6 +37,10 @@ type AccountSnapshot struct {
 type Repository interface {
 	CreateTransaction(ctx context.Context, tx Transaction) (Transaction, error)
 	UpdateStatus(ctx context.Context, txID uuid.UUID, from TxStatus, to TxStatus, settledAt *time.Time) (Transaction, error)
+	// FailTransaction transitions any PENDING or PROCESSING transaction to FAILED
+	// and writes the reason. It is safe to call when the current status is already
+	// FAILED (returns the existing row without error).
+	FailTransaction(ctx context.Context, txID uuid.UUID, reason string) (Transaction, error)
 	GetAccountSnapshot(ctx context.Context, accountID uuid.UUID) (AccountSnapshot, error)
 	GetAccountByCode(ctx context.Context, code string) (AccountSnapshot, error)
 }
@@ -105,6 +109,56 @@ RETURNING
 	updated_at,
 	settled_at,
 	expires_at
+`
+
+const failTransactionSQL = `
+UPDATE transactions
+SET
+	status        = 'FAILED',
+	failure_reason = $2,
+	updated_at    = now()
+WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')
+RETURNING
+	id,
+	idempotency_key,
+	from_account_id,
+	to_account_id,
+	amount::text,
+	currency,
+	status,
+	description,
+	metadata,
+	rail,
+	external_ref,
+	failure_reason,
+	journal_entry_id,
+	created_at,
+	updated_at,
+	settled_at,
+	expires_at
+`
+
+const selectTransactionByIDSQL = `
+SELECT
+	id,
+	idempotency_key,
+	from_account_id,
+	to_account_id,
+	amount::text,
+	currency,
+	status,
+	description,
+	metadata,
+	rail,
+	external_ref,
+	failure_reason,
+	journal_entry_id,
+	created_at,
+	updated_at,
+	settled_at,
+	expires_at
+FROM transactions
+WHERE id = $1
 `
 
 const selectAccountSnapshotByIDSQL = `

@@ -16,6 +16,7 @@ var (
 	ErrAccountNotFound  = errors.New("account not found")
 	ErrAccountNotActive = errors.New("account not active")
 	ErrCurrencyMismatch = errors.New("currency mismatch")
+	ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
 type LedgerRepository struct {
@@ -131,8 +132,13 @@ func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry Journal
 
 	accountIDs := collectAccountIDs(entry)
 
-	acctType, err := r.loadAndLockAccounts(ctx, tx, accountIDs, entry.Currency)
+	acctType, acctBalance, err := r.loadAndLockAccounts(ctx, tx, accountIDs, entry.Currency)
 	if err != nil {
+		return err
+	}
+
+	netDelta := computeNetDeltas(entry.Lines, acctType)
+	if err := checkSufficientBalances(acctBalance, netDelta); err != nil {
 		return err
 	}
 
@@ -145,7 +151,6 @@ func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry Journal
 		return err
 	}
 
-	netDelta := computeNetDeltas(entry.Lines, acctType)
 	if err := applyBalanceUpdates(ctx, tx, netDelta); err != nil {
 		return err
 	}
@@ -184,28 +189,34 @@ func collectAccountIDs(entry JournalEntry) []uuid.UUID {
 	return ids
 }
 
+// loadAndLockAccounts selects accounts in consistent UUID order (ORDER BY id)
+// and locks them with FOR UPDATE. Ordering prevents deadlocks when concurrent
+// transactions touch overlapping account sets. Returns account type and balance
+// maps so the caller can check sufficient funds before applying deltas.
 func (r *LedgerRepository) loadAndLockAccounts(
 	ctx context.Context,
 	tx pgx.Tx,
 	ids []uuid.UUID,
 	expectedCurrency string,
-) (map[uuid.UUID]string, error) {
+) (acctType map[uuid.UUID]string, acctBalance map[uuid.UUID]decimal.Decimal, _ error) {
 	if len(ids) == 0 {
-		return nil, errors.New("no accounts to load")
+		return nil, nil, errors.New("no accounts to load")
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, type, currency, status
+		SELECT id, type, currency, status, balance::text
 		FROM accounts
 		WHERE id = ANY($1)
+		ORDER BY id
 		FOR UPDATE
 	`, ids)
 	if err != nil {
-		return nil, fmt.Errorf("select accounts: %w", err)
+		return nil, nil, fmt.Errorf("select accounts: %w", err)
 	}
 	defer rows.Close()
 
-	acctType := make(map[uuid.UUID]string, len(ids))
+	acctType = make(map[uuid.UUID]string, len(ids))
+	acctBalance = make(map[uuid.UUID]decimal.Decimal, len(ids))
 	acctStatus := make(map[uuid.UUID]string, len(ids))
 	acctCurrency := make(map[uuid.UUID]string, len(ids))
 
@@ -216,32 +227,55 @@ func (r *LedgerRepository) loadAndLockAccounts(
 			typeStr   string
 			curStr    string
 			statusStr string
+			balStr    string
 		)
-		if err := rows.Scan(&id, &typeStr, &curStr, &statusStr); err != nil {
-			return nil, fmt.Errorf("scan accounts: %w", err)
+		if err := rows.Scan(&id, &typeStr, &curStr, &statusStr, &balStr); err != nil {
+			return nil, nil, fmt.Errorf("scan accounts: %w", err)
+		}
+		bal, err := decimal.NewFromString(balStr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse balance for account %s: %w", id, err)
 		}
 		seen++
 		acctType[id] = typeStr
+		acctBalance[id] = bal
 		acctStatus[id] = statusStr
 		acctCurrency[id] = curStr
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("accounts rows: %w", err)
+		return nil, nil, fmt.Errorf("accounts rows: %w", err)
 	}
 
 	if seen != len(ids) {
-		return nil, ErrAccountNotFound
+		return nil, nil, ErrAccountNotFound
 	}
 	for _, id := range ids {
 		if acctStatus[id] != "ACTIVE" {
-			return nil, ErrAccountNotActive
+			return nil, nil, ErrAccountNotActive
 		}
 		if acctCurrency[id] != expectedCurrency {
-			return nil, ErrCurrencyMismatch
+			return nil, nil, ErrCurrencyMismatch
 		}
 	}
 
-	return acctType, nil
+	return acctType, acctBalance, nil
+}
+
+// checkSufficientBalances verifies that no account's stored balance will drop
+// below zero after applying the computed net deltas. This check runs inside the
+// FOR UPDATE lock, so the balance values are authoritative and race-free.
+func checkSufficientBalances(
+	acctBalance map[uuid.UUID]decimal.Decimal,
+	netDelta map[uuid.UUID]decimal.Decimal,
+) error {
+	for id, delta := range netDelta {
+		newBalance := acctBalance[id].Add(delta)
+		if newBalance.LessThan(decimal.Zero) {
+			return fmt.Errorf("%w: account %s (current %s, delta %s)",
+				ErrInsufficientFunds, id, acctBalance[id], delta)
+		}
+	}
+	return nil
 }
 
 func insertEntryHeader(ctx context.Context, tx pgx.Tx, entry JournalEntry) (uuid.UUID, error) {
