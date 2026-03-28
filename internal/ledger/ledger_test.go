@@ -41,10 +41,10 @@ type fakeRepo struct {
 	last  JournalEntry
 }
 
-func (f *fakeRepo) InsertJournalEntry(_ context.Context, entry JournalEntry) error {
+func (f *fakeRepo) InsertJournalEntry(_ context.Context, entry JournalEntry) (uuid.UUID, error) {
 	f.calls++
 	f.last = entry
-	return f.err
+	return uuid.New(), f.err
 }
 
 func TestLedger_PostJournalEntry_Balanced(t *testing.T) {
@@ -71,8 +71,12 @@ func TestLedger_PostJournalEntry_Balanced(t *testing.T) {
 		},
 	}
 
-	if err := l.PostJournalEntry(context.Background(), entry); err != nil {
+	entryID, err := l.PostJournalEntry(context.Background(), entry)
+	if err != nil {
 		t.Fatalf("PostJournalEntry() unexpected error: %v", err)
+	}
+	if entryID == uuid.Nil {
+		t.Fatal("expected PostJournalEntry to return journal entry id")
 	}
 	if repo.calls != 1 {
 		t.Fatalf("expected repo.InsertJournalEntry to be called once, got %d", repo.calls)
@@ -103,7 +107,7 @@ func TestLedger_PostJournalEntry_Unbalanced(t *testing.T) {
 		},
 	}
 
-	err := l.PostJournalEntry(context.Background(), entry)
+	_, err := l.PostJournalEntry(context.Background(), entry)
 	if !errors.Is(err, ErrUnbalancedEntry) {
 		t.Fatalf("expected ErrUnbalancedEntry, got %v", err)
 	}
@@ -131,7 +135,7 @@ func TestLedger_PostJournalEntry_InvalidLineType(t *testing.T) {
 		},
 	}
 
-	err := l.PostJournalEntry(context.Background(), entry)
+	_, err := l.PostJournalEntry(context.Background(), entry)
 	if err == nil {
 		t.Fatal("expected error for invalid line type, got nil")
 	}

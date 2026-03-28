@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
+	"github.com/thesarfo/payments-engine/pkg/logctx"
+	"github.com/thesarfo/payments-engine/pkg/logging"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
@@ -48,6 +51,7 @@ type TransferService struct {
 	postedBy     string
 	idemStore    idempotency.Store
 	idemTTL      time.Duration
+	logger       zerolog.Logger
 }
 
 func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...idempotency.Store) *TransferService {
@@ -57,6 +61,7 @@ func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...ide
 		clearingCode: DefaultClearingCode,
 		postedBy:     DefaultPostedBy,
 		idemTTL:      defaultIdemTTL,
+		logger:       logging.New().With().Str("component", "transfer_service").Logger(),
 	}
 	if len(stores) > 0 {
 		svc.idemStore = stores[0]
@@ -145,18 +150,41 @@ func (s *TransferService) idempotencyStoreResult(ctx context.Context, idemKey st
 }
 
 func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*Transaction, error) {
+	traceID := logctx.TraceID(ctx)
+	if traceID == "" {
+		traceID = "-"
+	}
+
+	transferStart := time.Now()
+	logFailure := func(transferID string, step string, reason string) {
+		s.logger.Warn().
+			Str("event", "transfer_failed").
+			Str("trace_id", traceID).
+			Str("transfer_id", transferID).
+			Str("failed_step", step).
+			Str("reason", reason).
+			Msg("transfer failed")
+	}
+
 	if err := validateTransferRequest(req); err != nil {
+		logFailure("-", "validate_transfer_request", err.Error())
 		return nil, err
 	}
 	if s.ledger == nil {
-		return nil, fmt.Errorf("%w: ledger service is required", ErrInvalidTransfer)
+		err := fmt.Errorf("%w: ledger service is required", ErrInvalidTransfer)
+		logFailure("-", "load_ledger_service", err.Error())
+		return nil, err
 	}
 	idemKey := s.idempotencyTransferKey(req.IdempotencyKey)
 	if cached, err := s.idempotencyTryReturnCached(ctx, idemKey); err != nil || cached != nil {
+		if err != nil {
+			logFailure("-", "idempotency_cache_lookup", err.Error())
+		}
 		return cached, err
 	}
 	unlock, dup, err := s.idempotencyAcquireExclusive(ctx, idemKey)
 	if err != nil {
+		logFailure("-", "idempotency_acquire", err.Error())
 		return nil, err
 	}
 	if dup != nil {
@@ -173,44 +201,59 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 
 	fromAcc, err := s.repo.GetAccountSnapshot(ctx, req.FromAccountId)
 	if err != nil {
-		return nil, fmt.Errorf("load source account: %w", err)
+		loadErr := fmt.Errorf("load source account: %w", err)
+		logFailure("-", "load_source_account", loadErr.Error())
+		return nil, loadErr
 	}
 	toAcc, err := s.repo.GetAccountSnapshot(ctx, req.ToAccountId)
 	if err != nil {
-		return nil, fmt.Errorf("load destination account: %w", err)
+		loadErr := fmt.Errorf("load destination account: %w", err)
+		logFailure("-", "load_destination_account", loadErr.Error())
+		return nil, loadErr
 	}
 	requestedAmount := money.FromDecimal(req.Amount, money.Currency(req.Currency))
 	sourceBalance := money.FromDecimal(fromAcc.Balance, money.Currency(fromAcc.Currency))
 	destinationBalance := money.FromDecimal(toAcc.Balance, money.Currency(toAcc.Currency))
 
 	if !sourceBalance.SameCurrency(requestedAmount) || !destinationBalance.SameCurrency(requestedAmount) {
+		logFailure("-", "validate_currency", ErrCurrencyMismatch.Error())
 		return nil, ErrCurrencyMismatch
 	}
 	if fromAcc.Status != "ACTIVE" || toAcc.Status != "ACTIVE" {
-		return nil, fmt.Errorf("%w: accounts must be ACTIVE", ErrInvalidTransfer)
+		statusErr := fmt.Errorf("%w: accounts must be ACTIVE", ErrInvalidTransfer)
+		logFailure("-", "validate_account_status", statusErr.Error())
+		return nil, statusErr
 	}
 
 	insufficient, err := sourceBalance.LessThan(requestedAmount)
 	if err != nil {
+		logFailure("-", "balance_check", ErrCurrencyMismatch.Error())
 		return nil, ErrCurrencyMismatch
 	}
 	if insufficient {
+		logFailure("-", "balance_check", ErrInsufficientFunds.Error())
 		return nil, ErrInsufficientFunds
 	}
 
 	clearingAcc, err := s.repo.GetAccountByCode(ctx, s.clearingCode)
 	if errors.Is(err, ErrAccountNotFound) {
+		logFailure("-", "load_clearing_account", ErrClearingAccountNotFound.Error())
 		return nil, ErrClearingAccountNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load clearing account: %w", err)
+		loadErr := fmt.Errorf("load clearing account: %w", err)
+		logFailure("-", "load_clearing_account", loadErr.Error())
+		return nil, loadErr
 	}
 	clearingBalance := money.FromDecimal(clearingAcc.Balance, money.Currency(clearingAcc.Currency))
 	if !clearingBalance.SameCurrency(requestedAmount) {
+		logFailure("-", "validate_clearing_currency", ErrCurrencyMismatch.Error())
 		return nil, ErrCurrencyMismatch
 	}
 	if clearingAcc.Status != "ACTIVE" {
-		return nil, fmt.Errorf("%w: clearing account not ACTIVE", ErrInvalidTransfer)
+		statusErr := fmt.Errorf("%w: clearing account not ACTIVE", ErrInvalidTransfer)
+		logFailure("-", "validate_clearing_status", statusErr.Error())
+		return nil, statusErr
 	}
 
 	amountValue := requestedAmount.Amount()
@@ -234,18 +277,43 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 				return &existing, nil
 			}
 			if errors.Is(getErr, ErrTransactionNotFound) {
+				logFailure("-", "load_duplicate_transaction", ErrTransferInProgress.Error())
 				return nil, ErrTransferInProgress
 			}
-			return nil, fmt.Errorf("lookup duplicate idempotency key: %w", getErr)
+			dupErr := fmt.Errorf("lookup duplicate idempotency key: %w", getErr)
+			logFailure("-", "load_duplicate_transaction", dupErr.Error())
+			return nil, dupErr
 		}
-		return nil, fmt.Errorf("create transaction: %w", err)
+		createErr := fmt.Errorf("create transaction: %w", err)
+		logFailure("-", "create_transaction", createErr.Error())
+		return nil, createErr
 	}
+	transferID := created.ID.String()
+
+	s.logger.Info().
+		Str("event", "transfer_initiated").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("from_account", req.FromAccountId.String()).
+		Str("to_account", req.ToAccountId.String()).
+		Str("amount", amountValue.String()).
+		Str("currency", currencyCode).
+		Msg("transfer initiated")
+
+	s.logger.Info().
+		Str("event", "balance_checked").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("available_balance", sourceBalance.Amount().String()).
+		Str("requested_amount", amountValue.String()).
+		Msg("balance checked")
 
 	// failTx transitions to FAILED, writes the reason, caches the outcome in the
 	// idempotency store, and clears the in-progress lock so the defer doesn't
 	// delete the final cached payload. It returns the original error unchanged so
 	// callers can still propagate the right sentinel (e.g. ErrInsufficientFunds).
-	failTx := func(reason string, returnErr error) (*Transaction, error) {
+	failTx := func(step string, reason string, returnErr error) (*Transaction, error) {
+		logFailure(transferID, step, reason)
 		failed, ferr := s.repo.FailTransaction(ctx, created.ID, reason)
 		if ferr != nil {
 			return nil, fmt.Errorf("%w (additionally, fail-transition error: %v)", returnErr, ferr)
@@ -265,16 +333,34 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 			{AccountId: clearingAcc.ID, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
-	if err := s.ledger.PostJournalEntry(ctx, clearingEntry); err != nil {
+	clearingEntryID, err := s.ledger.PostJournalEntry(ctx, clearingEntry)
+	if err != nil {
 		if errors.Is(err, ledger.ErrInsufficientFunds) {
-			return failTx("insufficient funds", ErrInsufficientFunds)
+			return failTx("post_clearing_journal", "insufficient funds", ErrInsufficientFunds)
 		}
-		return failTx(err.Error(), fmt.Errorf("post clearing entry: %w", err))
+		return failTx("post_clearing_journal", err.Error(), fmt.Errorf("post clearing entry: %w", err))
 	}
+
+	s.logger.Info().
+		Str("event", "hold_placed").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("amount", amountValue.String()).
+		Msg("hold-equivalent clearing posted")
+
+	s.logger.Info().
+		Str("event", "journal_entry_posted").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("journal_entry_id", clearingEntryID.String()).
+		Str("debit_account", req.FromAccountId.String()).
+		Str("credit_account", clearingAcc.ID.String()).
+		Str("amount", amountValue.String()).
+		Msg("journal entry posted")
 
 	processing, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusPending, TxStatusProcessing, nil)
 	if err != nil {
-		return failTx(err.Error(), fmt.Errorf("transition to PROCESSING: %w", err))
+		return failTx("transition_processing", err.Error(), fmt.Errorf("transition to PROCESSING: %w", err))
 	}
 
 	rail := InternalRail
@@ -299,19 +385,46 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 			{AccountId: req.ToAccountId, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
-	if err := s.ledger.PostJournalEntry(ctx, settlementEntry); err != nil {
-		return failTx(err.Error(), fmt.Errorf("post settlement entry: %w", err))
+	settlementEntryID, err := s.ledger.PostJournalEntry(ctx, settlementEntry)
+	if err != nil {
+		return failTx("post_settlement_journal", err.Error(), fmt.Errorf("post settlement entry: %w", err))
 	}
+
+	s.logger.Info().
+		Str("event", "journal_entry_posted").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("journal_entry_id", settlementEntryID.String()).
+		Str("debit_account", clearingAcc.ID.String()).
+		Str("credit_account", req.ToAccountId.String()).
+		Str("amount", amountValue.String()).
+		Msg("journal entry posted")
+
+	s.logger.Info().
+		Str("event", "hold_released").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("amount", amountValue.String()).
+		Msg("hold-equivalent clearing released")
 
 	now := time.Now()
 	settled, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusProcessing, TxStatusSettled, &now)
 	if err != nil {
-		return failTx(err.Error(), fmt.Errorf("transition to SETTLED: %w", err))
+		return failTx("transition_settled", err.Error(), fmt.Errorf("transition to SETTLED: %w", err))
 	}
 	if err := s.idempotencyStoreResult(ctx, idemKey, settled); err != nil {
 		return nil, err
 	}
 	idemLocked = false
+
+	s.logger.Info().
+		Str("event", "transfer_settled").
+		Str("trace_id", traceID).
+		Str("transfer_id", transferID).
+		Str("journal_entry_id", settlementEntryID.String()).
+		Int64("duration_ms", time.Since(transferStart).Milliseconds()).
+		Msg("transfer settled")
+
 	return &settled, nil
 }
 

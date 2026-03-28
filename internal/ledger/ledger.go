@@ -12,7 +12,7 @@ var ErrUnbalancedEntry = errors.New("unbalanced journal entry: total debits must
 var ErrEntriesQueryNotSupported = errors.New("entries query not supported by repository")
 
 type Repository interface {
-	InsertJournalEntry(ctx context.Context, entry JournalEntry) error
+	InsertJournalEntry(ctx context.Context, entry JournalEntry) (uuid.UUID, error)
 }
 
 type accountEntriesReader interface {
@@ -29,7 +29,7 @@ func NewLedger(repo Repository) *Ledger {
 
 // PostJournalEntry enforces double-entry invariants and delegates to the repository
 // to persist the entry atomically (header + lines + balance updates).
-func (l *Ledger) PostJournalEntry(ctx context.Context, entry JournalEntry) error {
+func (l *Ledger) PostJournalEntry(ctx context.Context, entry JournalEntry) (uuid.UUID, error) {
 	totalDebits := decimal.Zero
 	totalCredits := decimal.Zero
 
@@ -40,12 +40,12 @@ func (l *Ledger) PostJournalEntry(ctx context.Context, entry JournalEntry) error
 		case LineTypeCredit:
 			totalCredits = totalCredits.Add(line.Amount)
 		default:
-			return errors.New("invalid line type")
+			return uuid.Nil, errors.New("invalid line type")
 		}
 	}
 
 	if !totalDebits.Equal(totalCredits) {
-		return ErrUnbalancedEntry
+		return uuid.Nil, ErrUnbalancedEntry
 	}
 
 	return l.repo.InsertJournalEntry(ctx, entry)
