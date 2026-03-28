@@ -119,13 +119,14 @@ type fakeLedgerRepo struct {
 	entries []ledger.JournalEntry
 }
 
-func (f *fakeLedgerRepo) InsertJournalEntry(_ context.Context, entry ledger.JournalEntry) error {
+func (f *fakeLedgerRepo) InsertJournalEntry(_ context.Context, entry ledger.JournalEntry) (uuid.UUID, error) {
 	if f.err != nil {
-		return f.err
+		return uuid.Nil, f.err
 	}
 	f.calls++
+	entry.ID = uuid.New()
 	f.entries = append(f.entries, entry)
-	return nil
+	return entry.ID, nil
 }
 
 func TestTransfer_InternalSettlesAndPostsTwoEntries(t *testing.T) {

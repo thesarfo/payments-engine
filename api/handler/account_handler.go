@@ -11,6 +11,7 @@ import (
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/account"
 	"github.com/thesarfo/payments-engine/internal/ledger"
+	"github.com/thesarfo/payments-engine/pkg/logctx"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
@@ -25,12 +26,14 @@ func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger) *A
 
 func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		setRequestError(r, "method_not_allowed", "only POST is supported for this endpoint")
 		writeJSON(w, http.StatusMethodNotAllowed, dto.ErrorResponse{Error: "method not allowed"})
 		return
 	}
 
 	var req dto.CreateAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		setRequestError(r, "invalid_json", "request body is not valid JSON")
 		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid JSON body"})
 		return
 	}
@@ -41,6 +44,7 @@ func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 		Currency: money.Currency(strings.ToUpper(strings.TrimSpace(req.Currency))),
 	})
 	if err != nil {
+		setRequestError(r, "invalid_request", err.Error())
 		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: err.Error()})
 		return
 	}
@@ -59,16 +63,19 @@ func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
+		setRequestError(r, "invalid_account_id", "account id is not a valid UUID")
 		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
 		return
 	}
 
 	acc, err := h.svc.GetAccountByID(r.Context(), id)
 	if errors.Is(err, account.ErrAccountNotFound) {
+		setRequestError(r, "account_not_found", "account was not found for provided id")
 		writeJSON(w, http.StatusNotFound, dto.ErrorResponse{Error: "account not found"})
 		return
 	}
 	if err != nil {
+		setRequestError(r, "internal_error", "failed to load account by id")
 		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
 		return
 	}
@@ -87,16 +94,19 @@ func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) 
 func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
+		setRequestError(r, "invalid_account_id", "account id is not a valid UUID")
 		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
 		return
 	}
 
 	rows, err := h.ledgerSvc.GetAccountEntries(r.Context(), id)
 	if errors.Is(err, ledger.ErrAccountNotFound) {
+		setRequestError(r, "account_not_found", "account was not found for provided id")
 		writeJSON(w, http.StatusNotFound, dto.ErrorResponse{Error: "account not found"})
 		return
 	}
 	if err != nil {
+		setRequestError(r, "internal_error", "failed to load ledger entries for account")
 		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
 		return
 	}
@@ -124,4 +134,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func setRequestError(r *http.Request, code, detail string) {
+	logctx.SetError(r.Context(), code, detail)
 }
