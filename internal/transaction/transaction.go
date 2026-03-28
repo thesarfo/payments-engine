@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgtype"
 	"github.com/shopspring/decimal"
+	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 type TxStatus string
@@ -73,4 +74,8 @@ func (tx *Transaction) TransitionTo(next TxStatus) error {
 		}
 	}
 	return fmt.Errorf("invalid transition: %s -> %s", tx.Status, next)
+}
+
+func (tx Transaction) Money() money.Money {
+	return money.FromDecimal(tx.Amount, money.Currency(tx.Currency))
 }
