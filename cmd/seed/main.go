@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/thesarfo/payments-engine/config"
 )
 
 type seedAccount struct {
@@ -43,13 +43,13 @@ func main() {
 		log.Printf("godotenv: %v (using existing env vars only)", err)
 	}
 
-	ctx := context.Background()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		log.Fatal("DATABASE_URL is required")
+	cfg, err := config.LoadSeedConfig()
+	if err != nil {
+		log.Fatalf("load seed config: %v", err)
 	}
 
-	pool, err := pgxpool.New(ctx, url)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("pgx pool: %v", err)
 	}

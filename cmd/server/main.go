@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
-	"os"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -14,26 +12,30 @@ import (
 
 	"github.com/thesarfo/payments-engine/api/handler"
 	apimiddleware "github.com/thesarfo/payments-engine/api/middleware"
+	"github.com/thesarfo/payments-engine/config"
 	"github.com/thesarfo/payments-engine/internal/account"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/internal/transaction"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
+	"github.com/thesarfo/payments-engine/pkg/logging"
 )
 
 func main() {
+	logger := logging.New()
+
 	if err := godotenv.Load(); err != nil {
-		log.Printf("godotenv: %v (using existing env vars only)", err)
+		logger.Warn().Err(err).Msg("godotenv unavailable, using process environment only")
+	}
+
+	cfg, err := config.LoadServerConfig()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("load server config")
 	}
 
 	ctx := context.Background()
-	connString := os.Getenv("DATABASE_URL")
-	if connString == "" {
-		log.Fatal("database url is required")
-	}
-
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("pgx pool: %v", err)
+		logger.Fatal().Err(err).Msg("pgx pool initialization failed")
 	}
 	defer pool.Close()
 
@@ -46,13 +48,13 @@ func main() {
 	accountHandler := handler.NewAccountHandler(svc, ledgerSvc)
 
 	transferSvc := transaction.NewTransferService(transactionRepo, ledgerSvc)
-	redisAddr := os.Getenv("REDIS_ADDR")
+	redisAddr := cfg.RedisAddr
 	if redisAddr != "" {
 		redisClient := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
 		})
 		if err := redisClient.Ping(ctx).Err(); err != nil {
-			log.Printf("redis unavailable at %s, continuing without redis idempotency: %v", redisAddr, err)
+			logger.Warn().Str("redis_addr", redisAddr).Err(err).Msg("redis unavailable; continuing without redis idempotency")
 			_ = redisClient.Close()
 		} else {
 			transferSvc = transaction.NewTransferService(
@@ -62,10 +64,10 @@ func main() {
 			)
 			defer func() {
 				if err := redisClient.Close(); err != nil {
-					log.Printf("redis close: %v", err)
+					logger.Warn().Err(err).Msg("redis close failed")
 				}
 			}()
-			log.Printf("redis idempotency enabled at %s", redisAddr)
+			logger.Info().Str("redis_addr", redisAddr).Msg("redis idempotency enabled")
 		}
 	}
 
@@ -74,7 +76,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
-	r.Use(apimiddleware.RequestLogger)
+	r.Use(apimiddleware.RequestLogger(logger))
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/accounts", accountHandler.CreateAccount)
 		r.Get("/accounts/{id}", accountHandler.GetAccountByID)
@@ -83,10 +85,10 @@ func main() {
 		r.Get("/transfers/{id}", transferHandler.GetTransferByID)
 	})
 
-	addr := ":8080"
-	log.Printf("server listening on %s", addr)
+	addr := cfg.ListenAddr
+	logger.Info().Str("listen_addr", addr).Msg("server listening")
 	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatal(err)
+		logger.Fatal().Err(err).Msg("http server stopped")
 	}
 
 }
