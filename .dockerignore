@@ -1,0 +1,16 @@
+.git
+.gitignore
+.cursor
+.idea
+node_modules
+tmp
+dist
+bin
+coverage
+*.log
+*.out
+.env
+.env.*
+README.md
+terminals
+agent-transcripts
