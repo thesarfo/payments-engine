@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	ErrAccountNotFound  = errors.New("account not found")
-	ErrAccountNotActive = errors.New("account not active")
-	ErrCurrencyMismatch = errors.New("currency mismatch")
+	ErrAccountNotFound   = errors.New("account not found")
+	ErrAccountNotActive  = errors.New("account not active")
+	ErrCurrencyMismatch  = errors.New("currency mismatch")
 	ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
@@ -119,46 +119,46 @@ func (r *LedgerRepository) GetAccountEntryRows(ctx context.Context, accountID uu
 // 3. insert header
 // 4. insert lines
 // 5. compute/apply balance deltas
-func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry JournalEntry) error {
+func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry JournalEntry) (uuid.UUID, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return uuid.Nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := validateEntryHeader(entry); err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	accountIDs := collectAccountIDs(entry)
 
 	acctType, acctBalance, err := r.loadAndLockAccounts(ctx, tx, accountIDs, entry.Currency)
 	if err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	netDelta := computeNetDeltas(entry.Lines, acctType)
 	if err := checkSufficientBalances(acctBalance, netDelta); err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	entryID, err := insertEntryHeader(ctx, tx, entry)
 	if err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	if err := insertEntryLines(ctx, tx, entryID, entry.Lines); err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	if err := applyBalanceUpdates(ctx, tx, netDelta); err != nil {
-		return err
+		return uuid.Nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return uuid.Nil, fmt.Errorf("commit: %w", err)
 	}
-	return nil
+	return entryID, nil
 }
 
 func validateEntryHeader(entry JournalEntry) error {
