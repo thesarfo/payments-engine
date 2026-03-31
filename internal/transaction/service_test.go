@@ -454,8 +454,8 @@ func TestTransfer_AuditSnapshots_SettledInternalRail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transfer: %v", err)
 	}
-	if len(al.events) != 5 {
-		t.Fatalf("expected 5 audit events, got %d", len(al.events))
+	if len(al.events) != 15 {
+		t.Fatalf("expected 15 audit events (5 steps x 3 fan-out), got %d", len(al.events))
 	}
 	want := []string{
 		audit.EventTransferInitiated,
@@ -464,15 +464,22 @@ func TestTransfer_AuditSnapshots_SettledInternalRail(t *testing.T) {
 		audit.EventJournalEntryPosted,
 		audit.EventTransferSettled,
 	}
-	for i := range want {
-		if al.events[i].EventType != want[i] {
-			t.Fatalf("event[%d]: want type %q, got %q", i, want[i], al.events[i].EventType)
+	for step := range want {
+		base := step * 3
+		triple := al.events[base : base+3]
+		for j, e := range triple {
+			if e.EventType != want[step] {
+				t.Fatalf("event[%d]: want type %q, got %q", base+j, want[step], e.EventType)
+			}
 		}
-		if al.events[i].EntityType != audit.EntityTransaction {
-			t.Fatalf("event[%d]: want entity transaction, got %q", i, al.events[i].EntityType)
+		if triple[0].EntityType != audit.EntityTransaction || triple[0].EntityID != tx.ID {
+			t.Fatalf("event[%d]: want transaction entity", base)
 		}
-		if al.events[i].EntityID != tx.ID {
-			t.Fatalf("event[%d]: entity id mismatch", i)
+		if triple[1].EntityType != audit.EntityAccount || triple[1].EntityID != fromID {
+			t.Fatalf("event[%d]: want from account entity", base+1)
+		}
+		if triple[2].EntityType != audit.EntityAccount || triple[2].EntityID != toID {
+			t.Fatalf("event[%d]: want to account entity", base+2)
 		}
 	}
 	var payload map[string]any
@@ -484,6 +491,16 @@ func TestTransfer_AuditSnapshots_SettledInternalRail(t *testing.T) {
 	}
 	if payload["transaction"] == nil || payload["accounts"] == nil {
 		t.Fatalf("expected transaction and accounts snapshots in payload, got %v", payload)
+	}
+	if payload["audit_scope"] != "transaction" {
+		t.Fatalf("audit_scope: got %v", payload["audit_scope"])
+	}
+	var fromPayload map[string]any
+	if err := json.Unmarshal(al.events[1].Payload, &fromPayload); err != nil {
+		t.Fatalf("from payload: %v", err)
+	}
+	if fromPayload["audit_scope"] != "account" || fromPayload["account_role"] != "from" {
+		t.Fatalf("from fan-out meta: %v", fromPayload)
 	}
 }
 
@@ -515,17 +532,33 @@ func TestTransfer_AuditSnapshots_FailsAfterInitiated(t *testing.T) {
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
 	}
-	if len(al.events) != 2 {
-		t.Fatalf("expected 2 audit events (initiated + failed), got %d", len(al.events))
+	if len(al.events) != 6 {
+		t.Fatalf("expected 6 audit events (2 steps x 3 fan-out), got %d", len(al.events))
 	}
-	if al.events[0].EventType != audit.EventTransferInitiated {
-		t.Fatalf("first event: %s", al.events[0].EventType)
-	}
-	if al.events[1].EventType != audit.EventTransferFailed {
-		t.Fatalf("second event: %s", al.events[1].EventType)
+	for i, want := range []struct {
+		typ        string
+		entityType string
+		id         uuid.UUID
+	}{
+		{audit.EventTransferInitiated, audit.EntityTransaction, repo.tx.ID},
+		{audit.EventTransferInitiated, audit.EntityAccount, fromID},
+		{audit.EventTransferInitiated, audit.EntityAccount, toID},
+		{audit.EventTransferFailed, audit.EntityTransaction, repo.tx.ID},
+		{audit.EventTransferFailed, audit.EntityAccount, fromID},
+		{audit.EventTransferFailed, audit.EntityAccount, toID},
+	} {
+		if al.events[i].EventType != want.typ {
+			t.Fatalf("event[%d] type: want %s, got %s", i, want.typ, al.events[i].EventType)
+		}
+		if al.events[i].EntityType != want.entityType {
+			t.Fatalf("event[%d] entity: want %s, got %s", i, want.entityType, al.events[i].EntityType)
+		}
+		if al.events[i].EntityID != want.id {
+			t.Fatalf("event[%d] entity id mismatch", i)
+		}
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(al.events[1].Payload, &payload); err != nil {
+	if err := json.Unmarshal(al.events[3].Payload, &payload); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
 	if payload["failed_step"] != "post_clearing_journal" {

@@ -119,6 +119,24 @@ func (s *TransferService) buildTransferAuditPayload(
 	return out
 }
 
+// clonePayloadWithAuditMeta clones the transfer payload into an audit payload with
+//  audit_scope and account_role, so that we can audit the accounts separately from the transactions
+func clonePayloadWithAuditMeta(base map[string]any, auditScope string, accountRole string) map[string]any {
+	b, err := json.Marshal(base)
+	if err != nil {
+		return base
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return base
+	}
+	out["audit_scope"] = auditScope
+	if accountRole != "" {
+		out["account_role"] = accountRole
+	}
+	return out
+}
+
 func (s *TransferService) loadThreeAccountSnapshots(ctx context.Context, fromID, toID, clearingID uuid.UUID) (fromAcc, toAcc, clearingAcc AccountSnapshot, err error) {
 	fromAcc, err = s.repo.GetAccountSnapshot(ctx, fromID)
 	if err != nil {
