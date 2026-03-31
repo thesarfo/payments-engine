@@ -108,6 +108,9 @@ func (s *TransferService) logAudit(ctx context.Context, entityType, entityID, ev
 	}
 }
 
+// emitTransferAudit writes one audit row for the transaction entity and duplicate rows for
+// the from and to accounts so that when we audit the accounts we can see every transfer-related 
+// event that touched that account
 func (s *TransferService) emitTransferAudit(ctx context.Context, eventType string, tx Transaction, clearingID uuid.UUID, journal *journalAuditPart, failedStep, failureReason string, durationMs int64) {
 	if s.auditLogger == nil {
 		return
@@ -122,7 +125,9 @@ func (s *TransferService) emitTransferAudit(ctx context.Context, eventType strin
 		return
 	}
 	payload := s.buildTransferAuditPayload(traceID, eventType, tx, fromAcc, toAcc, clearAcc, journal, failedStep, failureReason, durationMs)
-	s.logAudit(ctx, audit.EntityTransaction, tx.ID.String(), eventType, payload)
+	s.logAudit(ctx, audit.EntityTransaction, tx.ID.String(), eventType, clonePayloadWithAuditMeta(payload, "transaction", ""))
+	s.logAudit(ctx, audit.EntityAccount, tx.FromAccountID.String(), eventType, clonePayloadWithAuditMeta(payload, "account", "from"))
+	s.logAudit(ctx, audit.EntityAccount, tx.ToAccountID.String(), eventType, clonePayloadWithAuditMeta(payload, "account", "to"))
 }
 
 func (s *TransferService) GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error) {
