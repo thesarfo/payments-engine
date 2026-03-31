@@ -156,6 +156,10 @@ func (r *recordingAuditLogger) GetByEntity(context.Context, string, uuid.UUID) (
 	return nil, nil
 }
 
+func (r *recordingAuditLogger) GetByEntityRange(context.Context, string, uuid.UUID, *time.Time, *time.Time) ([]audit.AuditEvent, error) {
+	return nil, nil
+}
+
 func TestTransfer_InternalSettlesAndPostsTwoEntries(t *testing.T) {
 	fromID := uuid.New()
 	toID := uuid.New()

@@ -145,26 +145,21 @@ func (h *AccountHandler) GetAccountAuditLog(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	events, err := h.auditLogger.GetByEntity(r.Context(), audit.EntityAccount, id)
+	from, to, err := parseAuditTimeQuery(r)
+	if err != nil {
+		setRequestError(r, "invalid_query", err.Error())
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	events, err := h.auditLogger.GetByEntityRange(r.Context(), audit.EntityAccount, id, from, to)
 	if err != nil {
 		setRequestError(r, "internal_error", "failed to load audit log for account")
 		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	out := make([]dto.AuditEventResponse, 0, len(events))
-	for _, e := range events {
-		out = append(out, dto.AuditEventResponse{
-			ID:         e.ID,
-			EntityType: e.EntityType,
-			EntityID:   e.EntityID.String(),
-			EventType:  e.EventType,
-			Actor:      e.Actor,
-			Payload:    json.RawMessage(e.Payload),
-			OccurredAt: e.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-		})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, auditEventsToResponse(events))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

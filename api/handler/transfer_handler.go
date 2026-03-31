@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/api/dto"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/transaction"
 )
 
@@ -22,11 +23,12 @@ type transferService interface {
 }
 
 type TransferHandler struct {
-	svc transferService
+	svc         transferService
+	auditLogger audit.Logger
 }
 
-func NewTransferHandler(svc transferService) *TransferHandler {
-	return &TransferHandler{svc: svc}
+func NewTransferHandler(svc transferService, auditLogger audit.Logger) *TransferHandler {
+	return &TransferHandler{svc: svc, auditLogger: auditLogger}
 }
 
 func (h *TransferHandler) CreateTransfer(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +104,49 @@ func (h *TransferHandler) GetTransferByID(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, dto.NewTransactionResponse(tx))
+}
+
+// GetTransactionAudit returns audit_events for entity_type=transaction and the given transfer id in chrono order
+func (h *TransferHandler) GetTransactionAudit(w http.ResponseWriter, r *http.Request) {
+	txID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		setRequestError(r, "invalid_transaction_id", "transaction id is not a valid UUID")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid transaction id"})
+		return
+	}
+
+	if h.auditLogger == nil {
+		writeJSON(w, http.StatusOK, []dto.AuditEventResponse{})
+		return
+	}
+
+	_, err = h.svc.GetTransactionByID(r.Context(), txID)
+	if errors.Is(err, transaction.ErrTransactionNotFound) {
+		setRequestError(r, "transfer_not_found", "transfer was not found for provided id")
+		writeJSON(w, http.StatusNotFound, dto.ErrorResponse{Error: "transfer not found"})
+		return
+	}
+	if err != nil {
+		setRequestError(r, "internal_error", "failed to load transfer by id")
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	from, to, err := parseAuditTimeQuery(r)
+	if err != nil {
+		setRequestError(r, "invalid_query", err.Error())
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	events, err := h.auditLogger.GetByEntityRange(r.Context(), audit.EntityTransaction, txID, from, to)
+	if err != nil {
+		setRequestError(r, "internal_error", "failed to load audit log for transaction")
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, auditEventsToResponse(events))
 }
 
 func (h *TransferHandler) writeTransferError(w http.ResponseWriter, r *http.Request, err error) {

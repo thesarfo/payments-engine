@@ -2,16 +2,19 @@ package audit
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-
 type Logger interface {
 	Log(ctx context.Context, event AuditEvent) error
 	GetByEntity(ctx context.Context, entityType string, entityID uuid.UUID) ([]AuditEvent, error)
+	// GetByEntityRange returns events for entity_type + entity_id with optional inclusive occurred_at bounds.
+	// nil from/to means unbounded on that side. Ordered by occurred_at ASC, id ASC.
+	GetByEntityRange(ctx context.Context, entityType string, entityID uuid.UUID, from, to *time.Time) ([]AuditEvent, error)
 }
 
 type PostgresLogger struct {
@@ -42,15 +45,29 @@ func (l *PostgresLogger) Log(ctx context.Context, event AuditEvent) error {
 	).Scan(&event.ID, &event.OccurredAt)
 }
 
-const selectAuditEventsSQL = `
+const selectAuditEventsRangeSQL = `
 SELECT id, entity_type, entity_id, event_type, actor, payload, occurred_at
 FROM   audit_events
 WHERE  entity_type = $1 AND entity_id = $2
-ORDER  BY id ASC`
+  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+  AND ($4::timestamptz IS NULL OR occurred_at <= $4)
+ORDER  BY occurred_at ASC, id ASC`
 
-// GetByEntity returns all audit events for a given entity in order
+func nullableTimestamptz(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
+// GetByEntity returns all audit events for a given entity in chronological order.
 func (l *PostgresLogger) GetByEntity(ctx context.Context, entityType string, entityID uuid.UUID) ([]AuditEvent, error) {
-	rows, err := l.pool.Query(ctx, selectAuditEventsSQL, entityType, entityID)
+	return l.GetByEntityRange(ctx, entityType, entityID, nil, nil)
+}
+
+// GetByEntityRange returns audit events filtered by optional inclusive occurred_at bounds.
+func (l *PostgresLogger) GetByEntityRange(ctx context.Context, entityType string, entityID uuid.UUID, from, to *time.Time) ([]AuditEvent, error) {
+	rows, err := l.pool.Query(ctx, selectAuditEventsRangeSQL, entityType, entityID, nullableTimestamptz(from), nullableTimestamptz(to))
 	if err != nil {
 		return nil, err
 	}

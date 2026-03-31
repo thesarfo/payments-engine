@@ -73,7 +73,7 @@ func main() {
 		}
 	}
 
-	transferHandler := handler.NewTransferHandler(transferSvc)
+	transferHandler := handler.NewTransferHandler(transferSvc, auditLogger)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID)
@@ -86,6 +86,7 @@ func main() {
 		r.Get("/accounts/{id}/audit", accountHandler.GetAccountAuditLog)
 		r.Post("/transfers", transferHandler.CreateTransfer)
 		r.Get("/transfers/{id}", transferHandler.GetTransferByID)
+		r.Get("/transactions/{id}/audit", transferHandler.GetTransactionAudit)
 	})
 
 	addr := cfg.ListenAddr
