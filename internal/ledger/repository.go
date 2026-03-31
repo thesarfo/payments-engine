@@ -113,6 +113,70 @@ func (r *LedgerRepository) GetAccountEntryRows(ctx context.Context, accountID uu
 	return out, nil
 }
 
+func (r *LedgerRepository) GetTrialBalance(ctx context.Context, currency string) (TrialBalance, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			a.id,
+			a.code,
+			a.name,
+			COALESCE(SUM(CASE WHEN l.type = 'DEBIT'  THEN l.amount ELSE 0 END), 0)::text AS total_debits,
+			COALESCE(SUM(CASE WHEN l.type = 'CREDIT' THEN l.amount ELSE 0 END), 0)::text AS total_credits
+		FROM journal_entry_lines l
+		JOIN journal_entries e ON e.id = l.entry_id
+		JOIN accounts a ON a.id = l.account_id
+		WHERE e.currency = $1
+		  AND e.status = 'POSTED'
+		GROUP BY a.id, a.code, a.name
+		ORDER BY a.code
+	`, currency)
+	if err != nil {
+		return TrialBalance{}, fmt.Errorf("query trial balance: %w", err)
+	}
+	defer rows.Close()
+
+	var lines []TrialBalanceLine
+	netSum := decimal.Zero
+
+	for rows.Next() {
+		var (
+			id                    uuid.UUID
+			code, name            string
+			debitsStr, creditsStr string
+		)
+		if err := rows.Scan(&id, &code, &name, &debitsStr, &creditsStr); err != nil {
+			return TrialBalance{}, fmt.Errorf("scan trial balance row: %w", err)
+		}
+		debits, err := decimal.NewFromString(debitsStr)
+		if err != nil {
+			return TrialBalance{}, fmt.Errorf("parse total debits: %w", err)
+		}
+		credits, err := decimal.NewFromString(creditsStr)
+		if err != nil {
+			return TrialBalance{}, fmt.Errorf("parse total credits: %w", err)
+		}
+		net := debits.Sub(credits)
+		netSum = netSum.Add(net)
+		lines = append(lines, TrialBalanceLine{
+			AccountID:    id,
+			Code:         code,
+			Name:         name,
+			TotalDebits:  debits,
+			TotalCredits: credits,
+			Net:          net,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return TrialBalance{}, fmt.Errorf("trial balance rows: %w", err)
+	}
+
+	return TrialBalance{
+		Currency: currency,
+		Rows:     lines,
+		Balanced: netSum.IsZero(),
+		NetTotal: netSum,
+	}, nil
+}
+
 // InsertJournalEntry initiates a single transaction that:
 // 1. validate header
 // 2. lock and verify accounts

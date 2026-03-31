@@ -19,6 +19,12 @@ type accountEntriesReader interface {
 	GetAccountEntryRows(ctx context.Context, accountID uuid.UUID) ([]AccountEntryRow, error)
 }
 
+type trialBalanceReader interface {
+	GetTrialBalance(ctx context.Context, currency string) (TrialBalance, error)
+}
+
+var ErrTrialBalanceQueryNotSupported = errors.New("trial balance query not supported by repository")
+
 type Ledger struct {
 	repo Repository
 }
@@ -57,4 +63,12 @@ func (l *Ledger) GetAccountEntries(ctx context.Context, accountID uuid.UUID) ([]
 		return nil, ErrEntriesQueryNotSupported
 	}
 	return reader.GetAccountEntryRows(ctx, accountID)
+}
+
+func (l *Ledger) GetTrialBalance(ctx context.Context, currency string) (TrialBalance, error) {
+	reader, ok := l.repo.(trialBalanceReader)
+	if !ok {
+		return TrialBalance{}, ErrTrialBalanceQueryNotSupported
+	}
+	return reader.GetTrialBalance(ctx, currency)
 }
