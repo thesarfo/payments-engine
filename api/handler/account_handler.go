@@ -10,18 +10,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/account"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/logctx"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 type AccountHandler struct {
-	svc       *account.AccountService
-	ledgerSvc *ledger.Ledger
+	svc         *account.AccountService
+	ledgerSvc   *ledger.Ledger
+	auditLogger audit.Logger
 }
 
-func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger) *AccountHandler {
-	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc}
+func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger, auditLogger audit.Logger) *AccountHandler {
+	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc, auditLogger: auditLogger}
 }
 
 func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +130,36 @@ func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *AccountHandler) GetAccountAuditLog(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		setRequestError(r, "invalid_account_id", "account id is not a valid UUID")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
+		return
+	}
+
+	if h.auditLogger == nil {
+		writeJSON(w, http.StatusOK, []dto.AuditEventResponse{})
+		return
+	}
+
+	from, to, err := parseAuditTimeQuery(r)
+	if err != nil {
+		setRequestError(r, "invalid_query", err.Error())
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	events, err := h.auditLogger.GetByEntityRange(r.Context(), audit.EntityAccount, id, from, to)
+	if err != nil {
+		setRequestError(r, "internal_error", "failed to load audit log for account")
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, auditEventsToResponse(events))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

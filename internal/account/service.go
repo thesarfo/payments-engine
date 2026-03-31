@@ -2,16 +2,19 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 type AccountService struct {
-	repo Repository
+	repo        Repository
+	auditLogger audit.Logger
 }
 
 type CreateAccountInput struct {
@@ -22,6 +25,28 @@ type CreateAccountInput struct {
 
 func NewAccountService(repo Repository) *AccountService {
 	return &AccountService{repo: repo}
+}
+
+func (s *AccountService) WithAuditLogger(al audit.Logger) *AccountService {
+	s.auditLogger = al
+	return s
+}
+
+func (s *AccountService) logAudit(ctx context.Context, entityID uuid.UUID, eventType string, payload any) {
+	if s.auditLogger == nil {
+		return
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = s.auditLogger.Log(ctx, audit.AuditEvent{
+		EntityType: audit.EntityAccount,
+		EntityID:   entityID,
+		EventType:  eventType,
+		Actor:      "account-service",
+		Payload:    b,
+	})
 }
 
 func (s *AccountService) CreateAccount(ctx context.Context, input CreateAccountInput) (Account, error) {
@@ -46,7 +71,18 @@ func (s *AccountService) CreateAccount(ctx context.Context, input CreateAccountI
 		Status:   AccountStatusActive,
 	}
 
-	return s.repo.CreateAccount(ctx, acc)
+	created, err := s.repo.CreateAccount(ctx, acc)
+	if err != nil {
+		return Account{}, err
+	}
+	s.logAudit(ctx, created.ID, audit.EventAccountCreated, map[string]any{
+		"account_id": created.ID.String(),
+		"name":       created.Name,
+		"type":       string(created.Type),
+		"currency":   string(created.Currency),
+		"status":     string(created.Status),
+	})
+	return created, nil
 }
 
 func (s *AccountService) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {

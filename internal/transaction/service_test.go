@@ -2,12 +2,14 @@ package transaction
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
 )
@@ -98,11 +100,15 @@ func (f *fakeRepo) UpdateStatus(_ context.Context, txID uuid.UUID, from TxStatus
 }
 
 func (f *fakeRepo) GetAccountSnapshot(_ context.Context, accountID uuid.UUID) (AccountSnapshot, error) {
-	a, ok := f.accounts[accountID]
-	if !ok {
-		return AccountSnapshot{}, ErrAccountNotFound
+	if a, ok := f.accounts[accountID]; ok {
+		return a, nil
 	}
-	return a, nil
+	for _, v := range f.byCode {
+		if v.ID == accountID {
+			return v, nil
+		}
+	}
+	return AccountSnapshot{}, ErrAccountNotFound
 }
 
 func (f *fakeRepo) GetAccountByCode(_ context.Context, code string) (AccountSnapshot, error) {
@@ -127,6 +133,31 @@ func (f *fakeLedgerRepo) InsertJournalEntry(_ context.Context, entry ledger.Jour
 	entry.ID = uuid.New()
 	f.entries = append(f.entries, entry)
 	return entry.ID, nil
+}
+
+type recordingAuditLogger struct {
+	events []audit.AuditEvent
+}
+
+func (r *recordingAuditLogger) Log(_ context.Context, e audit.AuditEvent) error {
+	p := make([]byte, len(e.Payload))
+	copy(p, e.Payload)
+	r.events = append(r.events, audit.AuditEvent{
+		EntityType: e.EntityType,
+		EntityID:   e.EntityID,
+		EventType:  e.EventType,
+		Actor:      e.Actor,
+		Payload:    p,
+	})
+	return nil
+}
+
+func (r *recordingAuditLogger) GetByEntity(context.Context, string, uuid.UUID) ([]audit.AuditEvent, error) {
+	return nil, nil
+}
+
+func (r *recordingAuditLogger) GetByEntityRange(context.Context, string, uuid.UUID, *time.Time, *time.Time) ([]audit.AuditEvent, error) {
+	return nil, nil
 }
 
 func TestTransfer_InternalSettlesAndPostsTwoEntries(t *testing.T) {
@@ -392,5 +423,112 @@ func TestGetTransactionByID_NotFound(t *testing.T) {
 	_, err := svc.GetTransactionByID(context.Background(), uuid.New())
 	if !errors.Is(err, ErrTransactionNotFound) {
 		t.Fatalf("expected ErrTransactionNotFound, got %v", err)
+	}
+}
+
+func TestTransfer_AuditSnapshots_SettledInternalRail(t *testing.T) {
+	fromID := uuid.New()
+	toID := uuid.New()
+	clearingID := uuid.New()
+
+	repo := &fakeRepo{
+		accounts: map[uuid.UUID]AccountSnapshot{
+			fromID: {ID: fromID, Currency: "GHS", Balance: decimal.RequireFromString("250.0000"), Status: "ACTIVE"},
+			toID:   {ID: toID, Currency: "GHS", Balance: decimal.RequireFromString("10.0000"), Status: "ACTIVE"},
+		},
+		byCode: map[string]AccountSnapshot{
+			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
+		},
+	}
+	ledgerRepo := &fakeLedgerRepo{}
+	al := &recordingAuditLogger{}
+	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
+
+	tx, err := svc.Transfer(context.Background(), TransferRequest{
+		IdempotencyKey: "audit-idem-ok",
+		FromAccountId:  fromID,
+		ToAccountId:    toID,
+		Amount:         decimal.RequireFromString("100.0000"),
+		Currency:       "GHS",
+	})
+	if err != nil {
+		t.Fatalf("Transfer: %v", err)
+	}
+	if len(al.events) != 5 {
+		t.Fatalf("expected 5 audit events, got %d", len(al.events))
+	}
+	want := []string{
+		audit.EventTransferInitiated,
+		audit.EventHoldPlaced,
+		audit.EventJournalEntryPosted,
+		audit.EventJournalEntryPosted,
+		audit.EventTransferSettled,
+	}
+	for i := range want {
+		if al.events[i].EventType != want[i] {
+			t.Fatalf("event[%d]: want type %q, got %q", i, want[i], al.events[i].EventType)
+		}
+		if al.events[i].EntityType != audit.EntityTransaction {
+			t.Fatalf("event[%d]: want entity transaction, got %q", i, al.events[i].EntityType)
+		}
+		if al.events[i].EntityID != tx.ID {
+			t.Fatalf("event[%d]: entity id mismatch", i)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(al.events[0].Payload, &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if v, _ := payload["schema_version"].(float64); int(v) != audit.AuditPayloadSchemaVersion {
+		t.Fatalf("schema_version: got %v", payload["schema_version"])
+	}
+	if payload["transaction"] == nil || payload["accounts"] == nil {
+		t.Fatalf("expected transaction and accounts snapshots in payload, got %v", payload)
+	}
+}
+
+func TestTransfer_AuditSnapshots_FailsAfterInitiated(t *testing.T) {
+	fromID := uuid.New()
+	toID := uuid.New()
+	clearingID := uuid.New()
+
+	repo := &fakeRepo{
+		accounts: map[uuid.UUID]AccountSnapshot{
+			fromID: {ID: fromID, Currency: "GHS", Balance: decimal.RequireFromString("200.0000"), Status: "ACTIVE"},
+			toID:   {ID: toID, Currency: "GHS", Balance: decimal.RequireFromString("0.0000"), Status: "ACTIVE"},
+		},
+		byCode: map[string]AccountSnapshot{
+			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
+		},
+	}
+	ledgerRepo := &fakeLedgerRepo{err: ledger.ErrInsufficientFunds}
+	al := &recordingAuditLogger{}
+	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
+
+	_, err := svc.Transfer(context.Background(), TransferRequest{
+		IdempotencyKey: "audit-idem-fail",
+		FromAccountId:  fromID,
+		ToAccountId:    toID,
+		Amount:         decimal.RequireFromString("200.0000"),
+		Currency:       "GHS",
+	})
+	if !errors.Is(err, ErrInsufficientFunds) {
+		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
+	}
+	if len(al.events) != 2 {
+		t.Fatalf("expected 2 audit events (initiated + failed), got %d", len(al.events))
+	}
+	if al.events[0].EventType != audit.EventTransferInitiated {
+		t.Fatalf("first event: %s", al.events[0].EventType)
+	}
+	if al.events[1].EventType != audit.EventTransferFailed {
+		t.Fatalf("second event: %s", al.events[1].EventType)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(al.events[1].Payload, &payload); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if payload["failed_step"] != "post_clearing_journal" {
+		t.Fatalf("failed_step: %v", payload["failed_step"])
 	}
 }

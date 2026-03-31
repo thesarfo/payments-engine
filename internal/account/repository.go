@@ -33,11 +33,11 @@ func NewAccountRepository(pool *pgxpool.Pool) *AccountRepository {
 const insertAccountSQL = `
 INSERT INTO accounts (code, name, "type", currency, balance, status, is_posting)
 VALUES ($1, $2, $3, $4, $5, $6, true)
-RETURNING id, name, "type", currency, balance, status, version
+RETURNING id, name, "type", currency, balance::text, status, version
 `
 
 const selectAccountByIDSQL = `
-SELECT id, name, "type", currency, balance, status, version
+SELECT id, name, "type", currency, balance::text, status, version
 FROM accounts
 WHERE id = $1
 `
