@@ -1,0 +1,1 @@
+ALTER TYPE tx_status ADD VALUE 'RECONCILED';
