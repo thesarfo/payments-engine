@@ -7,10 +7,14 @@ import (
 )
 
 const (
-	EventAccountCreated    = "ACCOUNT_CREATED"
-	EventTransferInitiated = "TRANSFER_INITIATED"
-	EventTransferSettled   = "TRANSFER_SETTLED"
-	EventTransferFailed    = "TRANSFER_FAILED"
+	AuditPayloadSchemaVersion = 1
+
+	EventAccountCreated        = "ACCOUNT_CREATED"
+	EventTransferInitiated     = "TRANSFER_INITIATED"
+	EventHoldPlaced            = "HOLD_PLACED"
+	EventJournalEntryPosted    = "JOURNAL_ENTRY_POSTED"
+	EventTransferSettled       = "TRANSFER_SETTLED"
+	EventTransferFailed        = "TRANSFER_FAILED"
 )
 
 const (
