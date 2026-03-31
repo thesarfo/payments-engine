@@ -14,6 +14,7 @@ import (
 	apimiddleware "github.com/thesarfo/payments-engine/api/middleware"
 	"github.com/thesarfo/payments-engine/config"
 	"github.com/thesarfo/payments-engine/internal/account"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/internal/transaction"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
@@ -42,12 +43,13 @@ func main() {
 	accountRepo := account.NewAccountRepository(pool)
 	ledgerRepo := ledger.NewLedgerRepository(pool)
 	transactionRepo := transaction.NewPostgresRepository(pool)
+	auditLogger := audit.NewPostgresLogger(pool)
 
-	svc := account.NewAccountService(accountRepo)
+	svc := account.NewAccountService(accountRepo).WithAuditLogger(auditLogger)
 	ledgerSvc := ledger.NewLedger(ledgerRepo)
-	accountHandler := handler.NewAccountHandler(svc, ledgerSvc)
+	accountHandler := handler.NewAccountHandler(svc, ledgerSvc, auditLogger)
 
-	transferSvc := transaction.NewTransferService(transactionRepo, ledgerSvc)
+	transferSvc := transaction.NewTransferService(transactionRepo, ledgerSvc).WithAuditLogger(auditLogger)
 	redisAddr := cfg.RedisAddr
 	if redisAddr != "" {
 		redisClient := redis.NewClient(&redis.Options{
@@ -61,7 +63,7 @@ func main() {
 				transactionRepo,
 				ledgerSvc,
 				idempotency.NewRedisStore(redisClient),
-			)
+			).WithAuditLogger(auditLogger)
 			defer func() {
 				if err := redisClient.Close(); err != nil {
 					logger.Warn().Err(err).Msg("redis close failed")
@@ -81,6 +83,7 @@ func main() {
 		r.Post("/accounts", accountHandler.CreateAccount)
 		r.Get("/accounts/{id}", accountHandler.GetAccountByID)
 		r.Get("/accounts/{id}/entries", accountHandler.GetAccountEntries)
+		r.Get("/accounts/{id}/audit", accountHandler.GetAccountAuditLog)
 		r.Post("/transfers", transferHandler.CreateTransfer)
 		r.Get("/transfers/{id}", transferHandler.GetTransferByID)
 	})

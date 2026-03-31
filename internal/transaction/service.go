@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/shopspring/decimal"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/idempotency"
 	"github.com/thesarfo/payments-engine/pkg/logctx"
@@ -52,6 +53,7 @@ type TransferService struct {
 	idemStore    idempotency.Store
 	idemTTL      time.Duration
 	logger       zerolog.Logger
+	auditLogger  audit.Logger
 }
 
 func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...idempotency.Store) *TransferService {
@@ -74,6 +76,53 @@ func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...ide
 func (s *TransferService) WithClearingCode(code string) *TransferService {
 	s.clearingCode = code
 	return s
+}
+
+func (s *TransferService) WithAuditLogger(al audit.Logger) *TransferService {
+	s.auditLogger = al
+	return s
+}
+func (s *TransferService) logAudit(ctx context.Context, entityType, entityID, eventType string, payload any) {
+	if s.auditLogger == nil {
+		return
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("event_type", eventType).Msg("audit: marshal payload failed")
+		return
+	}
+	parsedID, err := uuid.Parse(entityID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("event_type", eventType).Msg("audit: parse entity id failed")
+		return
+	}
+	evt := audit.AuditEvent{
+		EntityType: entityType,
+		EntityID:   parsedID,
+		EventType:  eventType,
+		Actor:      s.postedBy,
+		Payload:    b,
+	}
+	if err := s.auditLogger.Log(ctx, evt); err != nil {
+		s.logger.Warn().Err(err).Str("event_type", eventType).Msg("audit: write failed")
+	}
+}
+
+func (s *TransferService) emitTransferAudit(ctx context.Context, eventType string, tx Transaction, clearingID uuid.UUID, journal *journalAuditPart, failedStep, failureReason string, durationMs int64) {
+	if s.auditLogger == nil {
+		return
+	}
+	traceID := logctx.TraceID(ctx)
+	if traceID == "" {
+		traceID = "-"
+	}
+	fromAcc, toAcc, clearAcc, err := s.loadThreeAccountSnapshots(ctx, tx.FromAccountID, tx.ToAccountID, clearingID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("event_type", eventType).Msg("audit: load account snapshots failed")
+		return
+	}
+	payload := s.buildTransferAuditPayload(traceID, eventType, tx, fromAcc, toAcc, clearAcc, journal, failedStep, failureReason, durationMs)
+	s.logAudit(ctx, audit.EntityTransaction, tx.ID.String(), eventType, payload)
 }
 
 func (s *TransferService) GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error) {
@@ -300,6 +349,8 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Str("currency", currencyCode).
 		Msg("transfer initiated")
 
+	s.emitTransferAudit(ctx, audit.EventTransferInitiated, created, clearingAcc.ID, nil, "", "", 0)
+
 	s.logger.Info().
 		Str("event", "balance_checked").
 		Str("trace_id", traceID).
@@ -320,6 +371,7 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		}
 		_ = s.idempotencyStoreResult(ctx, idemKey, failed)
 		idemLocked = false
+		s.emitTransferAudit(ctx, audit.EventTransferFailed, failed, clearingAcc.ID, nil, step, reason, 0)
 		return nil, returnErr
 	}
 
@@ -357,6 +409,14 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Str("credit_account", clearingAcc.ID.String()).
 		Str("amount", amountValue.String()).
 		Msg("journal entry posted")
+
+	clearingJournal := &journalAuditPart{
+		EntryID:     clearingEntryID,
+		Phase:       "clearing",
+		Description: clearingEntry.Description,
+	}
+	s.emitTransferAudit(ctx, audit.EventHoldPlaced, created, clearingAcc.ID, clearingJournal, "", "", 0)
+	s.emitTransferAudit(ctx, audit.EventJournalEntryPosted, created, clearingAcc.ID, clearingJournal, "", "", 0)
 
 	processing, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusPending, TxStatusProcessing, nil)
 	if err != nil {
@@ -400,6 +460,13 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Str("amount", amountValue.String()).
 		Msg("journal entry posted")
 
+	settlementJournal := &journalAuditPart{
+		EntryID:     settlementEntryID,
+		Phase:       "settlement",
+		Description: settlementEntry.Description,
+	}
+	s.emitTransferAudit(ctx, audit.EventJournalEntryPosted, processing, clearingAcc.ID, settlementJournal, "", "", 0)
+
 	s.logger.Info().
 		Str("event", "hold_released").
 		Str("trace_id", traceID).
@@ -424,6 +491,7 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Str("journal_entry_id", settlementEntryID.String()).
 		Int64("duration_ms", time.Since(transferStart).Milliseconds()).
 		Msg("transfer settled")
+	s.emitTransferAudit(ctx, audit.EventTransferSettled, settled, clearingAcc.ID, settlementJournal, "", "", time.Since(transferStart).Milliseconds())
 
 	return &settled, nil
 }
