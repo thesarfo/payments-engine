@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/thesarfo/payments-engine/internal/transaction"
@@ -71,4 +72,14 @@ func NewTransactionResponse(tx transaction.Transaction) TransactionResponse {
 		SettledAt:      settledAt,
 		ExpiresAt:      expiresAt,
 	}
+}
+
+type AuditEventResponse struct {
+	ID         int64           `json:"id"`
+	EntityType string          `json:"entity_type"`
+	EntityID   string          `json:"entity_id"`
+	EventType  string          `json:"event_type"`
+	Actor      string          `json:"actor"`
+	Payload    json.RawMessage `json:"payload"`
+	OccurredAt string          `json:"occurred_at"`
 }
