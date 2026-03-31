@@ -10,18 +10,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/account"
+	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
 	"github.com/thesarfo/payments-engine/pkg/logctx"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
 
 type AccountHandler struct {
-	svc       *account.AccountService
-	ledgerSvc *ledger.Ledger
+	svc         *account.AccountService
+	ledgerSvc   *ledger.Ledger
+	auditLogger audit.Logger
 }
 
-func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger) *AccountHandler {
-	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc}
+func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger, auditLogger audit.Logger) *AccountHandler {
+	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc, auditLogger: auditLogger}
 }
 
 func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +129,41 @@ func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *AccountHandler) GetAccountAuditLog(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		setRequestError(r, "invalid_account_id", "account id is not a valid UUID")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
+		return
+	}
+
+	if h.auditLogger == nil {
+		writeJSON(w, http.StatusOK, []dto.AuditEventResponse{})
+		return
+	}
+
+	events, err := h.auditLogger.GetByEntity(r.Context(), audit.EntityAccount, id)
+	if err != nil {
+		setRequestError(r, "internal_error", "failed to load audit log for account")
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	out := make([]dto.AuditEventResponse, 0, len(events))
+	for _, e := range events {
+		out = append(out, dto.AuditEventResponse{
+			ID:         e.ID,
+			EntityType: e.EntityType,
+			EntityID:   e.EntityID.String(),
+			EventType:  e.EventType,
+			Actor:      e.Actor,
+			Payload:    json.RawMessage(e.Payload),
+			OccurredAt: e.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
