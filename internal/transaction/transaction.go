@@ -23,6 +23,7 @@ const (
 	TxStatusReversed   TxStatus = "REVERSED"
 	TxStatusOnHold     TxStatus = "ON_HOLD"
 	TxStatusExpired    TxStatus = "EXPIRED"
+	TxStatusReconciled TxStatus = "RECONCILED"
 )
 
 type Transaction struct {
@@ -52,9 +53,10 @@ type Transaction struct {
 var validTransitions = map[TxStatus][]TxStatus{
 	TxStatusPending:    {TxStatusProcessing, TxStatusFailed, TxStatusExpired},
 	TxStatusProcessing: {TxStatusSettled, TxStatusFailed},
-	TxStatusSettled:    {TxStatusReversed},
+	TxStatusSettled:    {TxStatusReversed, TxStatusReconciled},
 	TxStatusFailed:     {},
 	TxStatusReversed:   {},
+	TxStatusReconciled: {},
 }
 
 func (tx *Transaction) TransitionTo(next TxStatus) error {

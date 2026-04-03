@@ -119,6 +119,14 @@ func (f *fakeRepo) GetAccountByCode(_ context.Context, code string) (AccountSnap
 	return a, nil
 }
 
+func (f *fakeRepo) ListSettledForSettlementDay(_ context.Context, _ time.Time, _ *time.Location, _ string) ([]Transaction, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) BulkUpdateStatus(_ context.Context, _ []uuid.UUID, _, _ TxStatus) (int64, error) {
+	return 0, nil
+}
+
 type fakeLedgerRepo struct {
 	err     error
 	calls   int

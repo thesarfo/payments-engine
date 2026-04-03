@@ -2,16 +2,20 @@
 
 Ledgr provides a ledger and transfer infrastructure for products that need reliable internal money movement.
 
-It provides account management, double-entry posting, and idempotent transfer orchestration behind a clean API.
+It provides account management, double-entry posting, and idempotent transfer orchestration behind a clean interface.
 
-## Product capabilities
+## Features
 
 - **Double-Entry Ledger**: every journal post is validated as balanced (total debits = total credits) before persistence.
 - **Immutable Audit Trail**: journal entries and lines are append-only in service behavior and remain queryable for full transfer traceability.
 - **Chart of Accounts**: hierarchical accounts with support for asset, liability, equity, income, and expense account classes.
 - **Multi-Currency Support (Partial)**: accounts are currency-scoped and transfers enforce currency consistency; cross-currency FX conversion is not yet implemented.
-- **Transfer Orchestration**: lifecycle management with deterministic state transitions (`PENDING -> PROCESSING -> SETTLED`).
-- **Safe Retries**: idempotent transfer submission via `X-Idempotency-Key`, with optional Redis-backed deduplication acceleration.
+- **Transfer Orchestration**: lifecycle management with deterministic state transitions
+- **Safe Retries**: idempotent transfer submission, with optional Redis-backed deduplication acceleration.
+- **Trial balance**: returns per-account debit/credit totals and net; response includes `balanced` and `net_total` (should be zero when the ledger is consistent).
+- **Settlement netting**: loads `SETTLED` transfers for a calendar day, nets flows per account pair and atomically reconciles them.
+- **Clearing account health**: checks the health of clearing account after a period. you can point a probe or cron at the specified endpoint to ensure the clearing account balance is zero after settlement
+
 
 
 <!-- 
@@ -80,8 +84,3 @@ curl -X POST http://localhost:8080/api/v1/transfers \
   - source account -> clearing account
   - clearing account -> destination account
 - Duplicate idempotency keys return prior result, or conflict if currently in progress
-
-## Roadmap
-
-- **Hold mechanism (Planned)**: reserve funds separately from ledger balance for pending or authorization-first workflows.
-- **Trial balance reports (Planned)**: real-time debit/credit aggregate reporting for operational and finance controls.

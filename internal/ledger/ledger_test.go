@@ -146,3 +146,56 @@ func TestLedger_PostJournalEntry_InvalidLineType(t *testing.T) {
 		t.Fatalf("expected repo.InsertJournalEntry not to be called, got %d calls", repo.calls)
 	}
 }
+
+type trialBalanceFakeRepo struct {
+	fakeRepo
+	tb    TrialBalance
+	tbErr error
+}
+
+func (f *trialBalanceFakeRepo) GetTrialBalance(ctx context.Context, currency string) (TrialBalance, error) {
+	if f.tbErr != nil {
+		return TrialBalance{}, f.tbErr
+	}
+	tb := f.tb
+	if tb.Currency == "" {
+		tb.Currency = currency
+	}
+	return tb, nil
+}
+
+func TestLedger_GetTrialBalance_NotSupported(t *testing.T) {
+	l := NewLedger(&fakeRepo{})
+	_, err := l.GetTrialBalance(context.Background(), "GHS")
+	if !errors.Is(err, ErrTrialBalanceQueryNotSupported) {
+		t.Fatalf("expected ErrTrialBalanceQueryNotSupported, got %v", err)
+	}
+}
+
+func TestLedger_GetTrialBalance_OK(t *testing.T) {
+	a := uuid.MustParse("00000000-0000-0000-0000-0000000000a1")
+	b := uuid.MustParse("00000000-0000-0000-0000-0000000000b2")
+	hundred := decimal.NewFromInt(100)
+	repo := &trialBalanceFakeRepo{
+		tb: TrialBalance{
+			Currency: "GHS",
+			Rows: []TrialBalanceLine{
+				{AccountID: a, Code: "A", Name: "one", TotalDebits: hundred, TotalCredits: decimal.Zero, Net: hundred},
+				{AccountID: b, Code: "B", Name: "two", TotalDebits: decimal.Zero, TotalCredits: hundred, Net: hundred.Neg()},
+			},
+			Balanced: true,
+			NetTotal: decimal.Zero,
+		},
+	}
+	l := NewLedger(repo)
+	got, err := l.GetTrialBalance(context.Background(), "GHS")
+	if err != nil {
+		t.Fatalf("GetTrialBalance: %v", err)
+	}
+	if !got.Balanced || !got.NetTotal.IsZero() {
+		t.Fatalf("expected balanced trial balance, got balanced=%v net=%s", got.Balanced, got.NetTotal)
+	}
+	if len(got.Rows) != 2 {
+		t.Fatalf("got %d rows", len(got.Rows))
+	}
+}

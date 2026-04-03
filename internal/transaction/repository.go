@@ -44,6 +44,8 @@ type Repository interface {
 	GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (Transaction, error)
 	GetAccountSnapshot(ctx context.Context, accountID uuid.UUID) (AccountSnapshot, error)
 	GetAccountByCode(ctx context.Context, code string) (AccountSnapshot, error)
+	ListSettledForSettlementDay(ctx context.Context, day time.Time, loc *time.Location, currency string) ([]Transaction, error)
+	BulkUpdateStatus(ctx context.Context, ids []uuid.UUID, from, to TxStatus) (int64, error)
 }
 
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
@@ -197,6 +199,40 @@ FROM accounts
 WHERE code = $1
 `
 
+const listSettledForSettlementDaySQL = `
+SELECT
+	id,
+	idempotency_key,
+	from_account_id,
+	to_account_id,
+	amount::text,
+	currency,
+	status,
+	description,
+	metadata,
+	rail,
+	external_ref,
+	failure_reason,
+	journal_entry_id,
+	created_at,
+	updated_at,
+	settled_at,
+	expires_at
+FROM transactions
+WHERE status = 'SETTLED'
+  AND settled_at IS NOT NULL
+  AND settled_at >= $1
+  AND settled_at < $2
+  AND ($3::text = '' OR currency = $3)
+ORDER BY settled_at, id
+`
+
+const bulkUpdateTransactionStatusSQL = `
+UPDATE transactions
+SET status = $3, updated_at = now()
+WHERE id = ANY($1::uuid[]) AND status = $2
+`
+
 func (r *PostgresRepository) CreateTransaction(ctx context.Context, tx Transaction) (Transaction, error) {
 	row := r.pool.QueryRow(ctx, insertTransactionSQL,
 		tx.IdempotencyKey,
@@ -293,6 +329,76 @@ func (r *PostgresRepository) GetAccountByCode(ctx context.Context, code string) 
 	return scanAccountSnapshot(row)
 }
 
+
+func SettlementDayBounds(day time.Time, loc *time.Location) (start, end time.Time) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	t := day.In(loc)
+	start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	end = start.Add(24 * time.Hour)
+	return start, end
+}
+
+type pgxQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+type pgxExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func (r *PostgresRepository) ListSettledForSettlementDay(ctx context.Context, day time.Time, loc *time.Location, currency string) ([]Transaction, error) {
+	start, end := SettlementDayBounds(day, loc)
+	return r.listSettledBetween(ctx, r.pool, start, end, currency)
+}
+
+func (r *PostgresRepository) ListSettledForSettlementDayTx(ctx context.Context, tx pgx.Tx, day time.Time, loc *time.Location, currency string) ([]Transaction, error) {
+	start, end := SettlementDayBounds(day, loc)
+	return r.listSettledBetween(ctx, tx, start, end, currency)
+}
+
+func (r *PostgresRepository) listSettledBetween(ctx context.Context, q pgxQuerier, start, end time.Time, currency string) ([]Transaction, error) {
+	rows, err := q.Query(ctx, listSettledForSettlementDaySQL, start, end, currency)
+	if err != nil {
+		return nil, fmt.Errorf("list settled for settlement day: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Transaction, 0)
+	for rows.Next() {
+		t, err := scanTransactionRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan transaction: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list settled rows: %w", err)
+	}
+	return out, nil
+}
+
+func (r *PostgresRepository) BulkUpdateStatus(ctx context.Context, ids []uuid.UUID, from, to TxStatus) (int64, error) {
+	return r.bulkUpdateStatus(ctx, r.pool, ids, from, to)
+}
+
+// BulkUpdateStatusTx updates status for the given ids within an existing transaction.
+func (r *PostgresRepository) BulkUpdateStatusTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, from, to TxStatus) (int64, error) {
+	return r.bulkUpdateStatus(ctx, tx, ids, from, to)
+}
+
+func (r *PostgresRepository) bulkUpdateStatus(ctx context.Context, e pgxExecer, ids []uuid.UUID, from, to TxStatus) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := e.Exec(ctx, bulkUpdateTransactionStatusSQL, ids, string(from), string(to))
+	if err != nil {
+		return 0, fmt.Errorf("bulk update status: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func scanAccountSnapshot(row pgx.Row) (AccountSnapshot, error) {
 	var (
 		id      uuid.UUID
@@ -326,7 +432,9 @@ func scanAccountSnapshot(row pgx.Row) (AccountSnapshot, error) {
 	}, nil
 }
 
-func scanTransactionRow(row pgx.Row) (Transaction, error) {
+func scanTransactionRow(row interface {
+	Scan(dest ...any) error
+}) (Transaction, error) {
 	var (
 		t            Transaction
 		amountStr    string
