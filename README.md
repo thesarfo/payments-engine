@@ -14,3 +14,28 @@ It provides account management, double-entry posting, and idempotent transfer or
 - **Trial balance**: returns per-account debit/credit totals and net; response includes `balanced` and `net_total` (should be zero when the ledger is consistent).
 - **Settlement netting**: loads `SETTLED` transfers for a calendar day, nets flows per account pair and atomically reconciles them.
 - **Clearing account health**: checks the health of clearing account after a period. you can point a probe or cron at the specified endpoint to ensure the clearing account balance is zero after settlement
+
+
+
+## Quick start (Docker)
+
+```bash
+docker compose up
+```
+
+This starts Postgres, Redis, runs migrations automatically, and serves the API on `:8080`.
+
+API Docs: [http://localhost:8080/swagger/index.html](http://localhost:8080/swagger/index.html)
+
+
+
+## Local development
+
+**Prerequisites:** Go 1.25+, PostgreSQL, [`migrate`](https://github.com/golang-migrate/migrate) CLI. Redis is optional.
+
+```bash
+cp .env.example .env          
+make migrate
+make seed
+go run ./cmd/server/main.go
+```
