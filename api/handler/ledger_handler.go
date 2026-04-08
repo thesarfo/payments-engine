@@ -17,6 +17,17 @@ func NewLedgerHandler(ledgerSvc *ledger.Ledger) *LedgerHandler {
 	return &LedgerHandler{ledgerSvc: ledgerSvc}
 }
 
+// GetTrialBalance returns a trial balance for all accounts in the given currency.
+//
+//	@Summary		Trial balance
+//	@Description	Returns debits, credits, and net for every account. The balanced field is true when net_total is zero, confirming the double-entry invariant holds.
+//	@Tags			ledger
+//	@Produce		json
+//	@Param			currency	query		string	true	"ISO 4217 currency code"	example(USD)
+//	@Success		200			{object}	dto.TrialBalanceResponse
+//	@Failure		400			{object}	dto.ErrorResponse
+//	@Failure		500			{object}	dto.ErrorResponse
+//	@Router			/ledger/trial-balance [get]
 func (h *LedgerHandler) GetTrialBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		setRequestError(r, "method_not_allowed", "only GET is supported for this endpoint")

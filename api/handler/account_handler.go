@@ -26,6 +26,17 @@ func NewAccountHandler(svc *account.AccountService, ledgerSvc *ledger.Ledger, au
 	return &AccountHandler{svc: svc, ledgerSvc: ledgerSvc, auditLogger: auditLogger}
 }
 
+// CreateAccount creates a new account in the chart of accounts.
+//
+//	@Summary		Create an account
+//	@Tags			accounts
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		dto.CreateAccountRequest	true	"Account details"
+//	@Success		201		{object}	dto.AccountResponse
+//	@Failure		400		{object}	dto.ErrorResponse
+//	@Failure		500		{object}	dto.ErrorResponse
+//	@Router			/accounts [post]
 func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		setRequestError(r, "method_not_allowed", "only POST is supported for this endpoint")
@@ -62,6 +73,17 @@ func (h *AccountHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetAccountByID fetches an account by its UUID.
+//
+//	@Summary		Get account by ID
+//	@Tags			accounts
+//	@Produce		json
+//	@Param			id	path		string	true	"Account UUID"
+//	@Success		200	{object}	dto.AccountResponse
+//	@Failure		400	{object}	dto.ErrorResponse
+//	@Failure		404	{object}	dto.ErrorResponse
+//	@Failure		500	{object}	dto.ErrorResponse
+//	@Router			/accounts/{id} [get]
 func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -93,6 +115,17 @@ func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// GetAccountEntries returns all journal entry lines posted to an account.
+//
+//	@Summary		List journal entries
+//	@Tags			accounts
+//	@Produce		json
+//	@Param			id	path		string	true	"Account UUID"
+//	@Success		200	{array}		dto.AccountEntryResponse
+//	@Failure		400	{object}	dto.ErrorResponse
+//	@Failure		404	{object}	dto.ErrorResponse
+//	@Failure		500	{object}	dto.ErrorResponse
+//	@Router			/accounts/{id}/entries [get]
 func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -132,6 +165,18 @@ func (h *AccountHandler) GetAccountEntries(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, out)
 }
 
+// GetAccountAuditLog returns the immutable audit trail for an account.
+//
+//	@Summary		Account audit log
+//	@Tags			accounts
+//	@Produce		json
+//	@Param			id		path		string	true	"Account UUID"
+//	@Param			from	query		string	false	"RFC3339 start time (inclusive)"	example(2024-01-01T00:00:00Z)
+//	@Param			to		query		string	false	"RFC3339 end time (inclusive)"		example(2024-12-31T23:59:59Z)
+//	@Success		200		{array}		dto.AuditEventResponse
+//	@Failure		400		{object}	dto.ErrorResponse
+//	@Failure		500		{object}	dto.ErrorResponse
+//	@Router			/accounts/{id}/audit [get]
 func (h *AccountHandler) GetAccountAuditLog(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

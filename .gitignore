@@ -11,3 +11,4 @@ guide.md
 .env.test
 .env.production
 .cursor/
+.claude/
