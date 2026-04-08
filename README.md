@@ -9,7 +9,6 @@ It provides account management, double-entry posting, and idempotent transfer or
 - **Double-Entry Ledger**: every journal post is validated as balanced (total debits = total credits) before persistence.
 - **Immutable Audit Trail**: journal entries and lines are append-only in service behavior and remain queryable for full transfer traceability.
 - **Chart of Accounts**: hierarchical accounts with support for asset, liability, equity, income, and expense account classes.
-- **Multi-Currency Support (Partial)**: accounts are currency-scoped and transfers enforce currency consistency; cross-currency FX conversion is not yet implemented.
 - **Transfer Orchestration**: lifecycle management with deterministic state transitions
 - **Safe Retries**: idempotent transfer submission, with optional Redis-backed deduplication acceleration.
 - **Trial balance**: returns per-account debit/credit totals and net; response includes `balanced` and `net_total` (should be zero when the ledger is consistent).
@@ -18,69 +17,25 @@ It provides account management, double-entry posting, and idempotent transfer or
 
 
 
-<!-- 
-## Local deployment
-
-### 1) Start infrastructure
+## Quick start (Docker)
 
 ```bash
-docker compose up -d
+docker compose up
 ```
 
-Services:
+This starts Postgres, Redis, runs migrations automatically, and serves the API on `:8080`.
 
-- PostgreSQL: `localhost:5433`
-- Redis: `localhost:6379`
+API Docs: [http://localhost:8080/swagger/index.html](http://localhost:8080/swagger/index.html)
 
-### 2) Configure runtime environment
 
-PowerShell:
 
-```powershell
-$env:DATABASE_URL="postgres://postgres:postgres@localhost:5433/payments_engine?sslmode=disable"
-$env:REDIS_ADDR="localhost:6379"
-```
+## Local development
 
-### 3) Run migrations via make or:
+**Prerequisites:** Go 1.25+, PostgreSQL, [`migrate`](https://github.com/golang-migrate/migrate) CLI. Redis is optional.
 
 ```bash
-migrate -path ./migrations -database "$DATABASE_URL" up
-```
-
-Install migrate if missing:
-
-```bash
-go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-```
-
-### 4) Seed system accounts
-
-```bash
-go run ./cmd/seed/main.go
-```
-
-### 5) Start the service
-
-```bash
+cp .env.example .env          
+make migrate
+make seed
 go run ./cmd/server/main.go
 ```
-
-
-## Integration example
-
-```bash
-curl -X POST http://localhost:8080/api/v1/transfers \
-  -H "Content-Type: application/json" \
-  -H "X-Idempotency-Key: transfer-001" \
-  -d '{"from_account_id":"<FROM_UUID>","to_account_id":"<TO_UUID>","amount":"25.0000","currency":"GHS","rail":"INTERNAL","description":"P2P transfer"}'
-``` -->
-
-## Transfer guarantees
-
-- Positive, same-currency amounts are enforced before processing
-- Source and destination accounts must be `ACTIVE`
-- Clearing account `GL_LIAB_CLEARING` is required for posting flow
-- Internal rail posts two balanced journal entries:
-  - source account -> clearing account
-  - clearing account -> destination account
-- Duplicate idempotency keys return prior result, or conflict if currently in progress

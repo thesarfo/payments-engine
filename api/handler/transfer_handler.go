@@ -31,6 +31,21 @@ func NewTransferHandler(svc transferService, auditLogger audit.Logger) *Transfer
 	return &TransferHandler{svc: svc, auditLogger: auditLogger}
 }
 
+// CreateTransfer initiates an idempotent transfer between two accounts.
+//
+//	@Summary		Initiate a transfer
+//	@Description	Moves funds between two accounts using double-entry bookkeeping. The X-Idempotency-Key header is required — submitting the same key twice returns the original response without creating a duplicate transfer.
+//	@Tags			transfers
+//	@Accept			json
+//	@Produce		json
+//	@Param			X-Idempotency-Key	header		string						true	"Idempotency key (UUID v4 recommended)"
+//	@Param			request				body		dto.CreateTransferRequest	true	"Transfer details"
+//	@Success		201					{object}	dto.TransactionResponse
+//	@Failure		400					{object}	dto.ErrorResponse
+//	@Failure		404					{object}	dto.ErrorResponse
+//	@Failure		409					{object}	dto.ErrorResponse	"Transfer with this idempotency key is already in progress"
+//	@Failure		500					{object}	dto.ErrorResponse
+//	@Router			/transfers [post]
 func (h *TransferHandler) CreateTransfer(w http.ResponseWriter, r *http.Request) {
 	idempotencyKey := strings.TrimSpace(r.Header.Get(idempotencyHeader))
 	if idempotencyKey == "" {
@@ -83,6 +98,17 @@ func (h *TransferHandler) CreateTransfer(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, dto.NewTransactionResponse(*tx))
 }
 
+// GetTransferByID fetches a transfer by its UUID.
+//
+//	@Summary		Get transfer by ID
+//	@Tags			transfers
+//	@Produce		json
+//	@Param			id	path		string	true	"Transfer UUID"
+//	@Success		200	{object}	dto.TransactionResponse
+//	@Failure		400	{object}	dto.ErrorResponse
+//	@Failure		404	{object}	dto.ErrorResponse
+//	@Failure		500	{object}	dto.ErrorResponse
+//	@Router			/transfers/{id} [get]
 func (h *TransferHandler) GetTransferByID(w http.ResponseWriter, r *http.Request) {
 	txID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -106,7 +132,19 @@ func (h *TransferHandler) GetTransferByID(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, dto.NewTransactionResponse(tx))
 }
 
-// GetTransactionAudit returns audit_events for entity_type=transaction and the given transfer id in chrono order
+// GetTransactionAudit returns the immutable audit trail for a transfer.
+//
+//	@Summary		Transaction audit log
+//	@Tags			transfers
+//	@Produce		json
+//	@Param			id		path		string	true	"Transfer UUID"
+//	@Param			from	query		string	false	"RFC3339 start time (inclusive)"	example(2024-01-01T00:00:00Z)
+//	@Param			to		query		string	false	"RFC3339 end time (inclusive)"		example(2024-12-31T23:59:59Z)
+//	@Success		200		{array}		dto.AuditEventResponse
+//	@Failure		400		{object}	dto.ErrorResponse
+//	@Failure		404		{object}	dto.ErrorResponse
+//	@Failure		500		{object}	dto.ErrorResponse
+//	@Router			/transactions/{id}/audit [get]
 func (h *TransferHandler) GetTransactionAudit(w http.ResponseWriter, r *http.Request) {
 	txID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

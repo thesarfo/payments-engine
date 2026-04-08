@@ -1,3 +1,17 @@
+// Ledgr — Payments Engine
+//
+// A double-entry ledger and transfer orchestration service for fintech infrastructure.
+// Provides account management, immutable journal posting, idempotent transfers, and settlement netting.
+// Authentication is delegated to the consuming application.
+//
+//	@title		Ledgr — Payments Engine
+//	@version	1.0.0
+//	@description	A double-entry ledger and transfer orchestration service for fintech infrastructure.
+//
+//	@host		localhost:8080
+//	@BasePath	/api/v1
+//
+//	@contact.name	Ledgr
 package main
 
 import (
@@ -9,10 +23,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
+	httpSwagger "github.com/swaggo/http-swagger"
 
 	"github.com/thesarfo/payments-engine/api/handler"
 	apimiddleware "github.com/thesarfo/payments-engine/api/middleware"
 	"github.com/thesarfo/payments-engine/config"
+	_ "github.com/thesarfo/payments-engine/docs"
 	"github.com/thesarfo/payments-engine/internal/account"
 	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
@@ -81,6 +97,9 @@ func main() {
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
 	r.Use(apimiddleware.RequestLogger(logger))
+	r.Get("/swagger/*", httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+	))
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/accounts", accountHandler.CreateAccount)
 		r.Get("/accounts/{id}", accountHandler.GetAccountByID)
@@ -94,9 +113,8 @@ func main() {
 	})
 
 	addr := cfg.ListenAddr
-	logger.Info().Str("listen_addr", addr).Msg("server listening")
+	logger.Info().Str("listen_addr", addr).Str("swagger_ui", "http://"+addr+"/swagger/index.html").Msg("server listening")
 	if err := http.ListenAndServe(addr, r); err != nil {
 		logger.Fatal().Err(err).Msg("http server stopped")
 	}
-
 }

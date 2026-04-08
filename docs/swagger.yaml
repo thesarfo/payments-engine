@@ -1,0 +1,563 @@
+basePath: /api/v1
+definitions:
+  dto.AccountEntryResponse:
+    properties:
+      amount:
+        example: "250.0000"
+        type: string
+      entry_description:
+        example: Transfer settlement
+        type: string
+      entry_id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      entry_status:
+        enum:
+        - POSTED
+        - REVERSED
+        example: POSTED
+        type: string
+      line_description:
+        example: Debit leg of transfer
+        type: string
+      line_id:
+        example: c3d4e5f6-a7b8-9012-cdef-123456789012
+        type: string
+      line_type:
+        enum:
+        - DEBIT
+        - CREDIT
+        example: DEBIT
+        type: string
+      posted_at:
+        example: "2024-01-15T10:30:00Z"
+        type: string
+      reference:
+        example: b2c3d4e5-f6a7-8901-bcde-f12345678901
+        type: string
+      sequence:
+        example: 1
+        type: integer
+    type: object
+  dto.AccountResponse:
+    properties:
+      balance:
+        example: "1000.0000"
+        type: string
+      currency:
+        example: USD
+        type: string
+      id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      name:
+        example: Operating Account
+        type: string
+      status:
+        enum:
+        - ACTIVE
+        - FROZEN
+        - CLOSED
+        example: ACTIVE
+        type: string
+      type:
+        example: ASSET
+        type: string
+      version:
+        example: 1
+        type: integer
+    type: object
+  dto.AuditEventResponse:
+    properties:
+      actor:
+        example: payments-engine
+        type: string
+      entity_id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      entity_type:
+        enum:
+        - account
+        - transaction
+        example: account
+        type: string
+      event_type:
+        example: account.created
+        type: string
+      id:
+        example: 1
+        type: integer
+      occurred_at:
+        example: "2024-01-15T10:30:00.000000000Z"
+        type: string
+      payload:
+        type: object
+    type: object
+  dto.ClearingHealthResponse:
+    properties:
+      balance:
+        example: "0.0000"
+        type: string
+      clearing_account_code:
+        example: GL_LIAB_CLEARING
+        type: string
+      currency:
+        example: USD
+        type: string
+      reason:
+        example: clearing_account_balance_non_zero
+        type: string
+      status:
+        enum:
+        - OK
+        - ALERT
+        example: OK
+        type: string
+    type: object
+  dto.CreateAccountRequest:
+    properties:
+      currency:
+        example: USD
+        type: string
+      name:
+        example: Operating Account
+        type: string
+      type:
+        enum:
+        - ASSET
+        - LIABILITY
+        - EQUITY
+        - INCOME
+        - EXPENSE
+        example: ASSET
+        type: string
+    type: object
+  dto.CreateTransferRequest:
+    properties:
+      amount:
+        example: "250.00"
+        type: string
+      currency:
+        example: USD
+        type: string
+      description:
+        example: 'Invoice #1042 payment'
+        type: string
+      from_account_id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      rail:
+        example: INTERNAL
+        type: string
+      to_account_id:
+        example: b2c3d4e5-f6a7-8901-bcde-f12345678901
+        type: string
+    type: object
+  dto.ErrorResponse:
+    properties:
+      error:
+        example: account not found
+        type: string
+    type: object
+  dto.TransactionResponse:
+    properties:
+      amount:
+        example: "250.0000"
+        type: string
+      created_at:
+        example: "2024-01-15T10:30:00.000000000Z"
+        type: string
+      currency:
+        example: USD
+        type: string
+      description:
+        example: 'Invoice #1042 payment'
+        type: string
+      expires_at:
+        example: "2024-01-16T10:30:00.000000000Z"
+        type: string
+      external_ref:
+        example: ext-ref-001
+        type: string
+      failure_reason:
+        example: insufficient_funds
+        type: string
+      from_account_id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      id:
+        example: d4e5f6a7-b8c9-0123-defa-234567890123
+        type: string
+      idempotency_key:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      journal_entry_id:
+        example: e5f6a7b8-c9d0-1234-efab-345678901234
+        type: string
+      rail:
+        example: INTERNAL
+        type: string
+      settled_at:
+        example: "2024-01-15T10:30:01.000000000Z"
+        type: string
+      status:
+        enum:
+        - PENDING
+        - PROCESSING
+        - SETTLED
+        - FAILED
+        - REVERSED
+        - ON_HOLD
+        - EXPIRED
+        - RECONCILED
+        example: SETTLED
+        type: string
+      to_account_id:
+        example: b2c3d4e5-f6a7-8901-bcde-f12345678901
+        type: string
+      updated_at:
+        example: "2024-01-15T10:30:01.000000000Z"
+        type: string
+    type: object
+  dto.TrialBalanceResponse:
+    properties:
+      balanced:
+        example: true
+        type: boolean
+      currency:
+        example: USD
+        type: string
+      net_total:
+        example: "0.0000"
+        type: string
+      rows:
+        items:
+          $ref: '#/definitions/dto.TrialBalanceRow'
+        type: array
+    type: object
+  dto.TrialBalanceRow:
+    properties:
+      account_id:
+        example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        type: string
+      code:
+        example: GL_ASSET_CASH
+        type: string
+      name:
+        example: Cash
+        type: string
+      net:
+        example: "2000.0000"
+        type: string
+      total_credits:
+        example: "3000.0000"
+        type: string
+      total_debits:
+        example: "5000.0000"
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: Ledgr
+  description: A double-entry ledger and transfer orchestration service for fintech
+    infrastructure.
+  title: Ledgr — Payments Engine
+  version: 1.0.0
+paths:
+  /accounts:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Account details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.AccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Create an account
+      tags:
+      - accounts
+  /accounts/{id}:
+    get:
+      parameters:
+      - description: Account UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.AccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Get account by ID
+      tags:
+      - accounts
+  /accounts/{id}/audit:
+    get:
+      parameters:
+      - description: Account UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 start time (inclusive)
+        example: "2024-01-01T00:00:00Z"
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 end time (inclusive)
+        example: "2024-12-31T23:59:59Z"
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.AuditEventResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Account audit log
+      tags:
+      - accounts
+  /accounts/{id}/entries:
+    get:
+      parameters:
+      - description: Account UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.AccountEntryResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: List journal entries
+      tags:
+      - accounts
+  /health/clearing:
+    get:
+      description: A non-zero balance indicates a double-entry invariant violation
+        — a transfer settled without fully clearing. Returns 200 when healthy, 503
+        otherwise.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ClearingHealthResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/dto.ClearingHealthResponse'
+      summary: Clearing account health
+      tags:
+      - health
+  /ledger/trial-balance:
+    get:
+      description: Returns debits, credits, and net for every account. The balanced
+        field is true when net_total is zero, confirming the double-entry invariant
+        holds.
+      parameters:
+      - description: ISO 4217 currency code
+        example: USD
+        in: query
+        name: currency
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.TrialBalanceResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Trial balance
+      tags:
+      - ledger
+  /transactions/{id}/audit:
+    get:
+      parameters:
+      - description: Transfer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 start time (inclusive)
+        example: "2024-01-01T00:00:00Z"
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 end time (inclusive)
+        example: "2024-12-31T23:59:59Z"
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.AuditEventResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Transaction audit log
+      tags:
+      - transfers
+  /transfers:
+    post:
+      consumes:
+      - application/json
+      description: Moves funds between two accounts using double-entry bookkeeping.
+        The X-Idempotency-Key header is required — submitting the same key twice returns
+        the original response without creating a duplicate transfer.
+      parameters:
+      - description: Idempotency key (UUID v4 recommended)
+        in: header
+        name: X-Idempotency-Key
+        required: true
+        type: string
+      - description: Transfer details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateTransferRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.TransactionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "409":
+          description: Transfer with this idempotency key is already in progress
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Initiate a transfer
+      tags:
+      - transfers
+  /transfers/{id}:
+    get:
+      parameters:
+      - description: Transfer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.TransactionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      summary: Get transfer by ID
+      tags:
+      - transfers
+swagger: "2.0"
