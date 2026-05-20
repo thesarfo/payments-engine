@@ -67,7 +67,7 @@ func TestTransfer_StressConcurrent20(t *testing.T) {
 
 	ledgerRepo := ledger.NewLedgerRepository(pool)
 	txRepo := NewPostgresRepository(pool)
-	svc := NewTransferService(txRepo, ledger.NewLedger(ledgerRepo)).WithClearingCode(clearingCode)
+	svc := NewTransferService(pool, txRepo, ledger.NewLedger(ledgerRepo)).WithClearingCode(clearingCode)
 
 	const workers = 20
 

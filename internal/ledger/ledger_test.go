@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
@@ -42,6 +43,12 @@ type fakeRepo struct {
 }
 
 func (f *fakeRepo) InsertJournalEntry(_ context.Context, entry JournalEntry) (uuid.UUID, error) {
+	f.calls++
+	f.last = entry
+	return uuid.New(), f.err
+}
+
+func (f *fakeRepo) InsertJournalEntryTx(_ context.Context, _ pgx.Tx, entry JournalEntry) (uuid.UUID, error) {
 	f.calls++
 	f.last = entry
 	return uuid.New(), f.err

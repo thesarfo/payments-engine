@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/api/dto"
 	"github.com/thesarfo/payments-engine/internal/ledger"
@@ -16,6 +17,10 @@ import (
 type fakeTrialBalanceRepo struct{}
 
 func (f *fakeTrialBalanceRepo) InsertJournalEntry(_ context.Context, _ ledger.JournalEntry) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+func (f *fakeTrialBalanceRepo) InsertJournalEntryTx(_ context.Context, _ pgx.Tx, _ ledger.JournalEntry) (uuid.UUID, error) {
 	return uuid.Nil, nil
 }
 
