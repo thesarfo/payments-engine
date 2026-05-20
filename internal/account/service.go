@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
+
+var ErrInvalidStatusTransition = errors.New("invalid account status transition")
 
 type AccountService struct {
 	repo        Repository
@@ -87,6 +90,44 @@ func (s *AccountService) CreateAccount(ctx context.Context, input CreateAccountI
 
 func (s *AccountService) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
 	return s.repo.GetAccountByID(ctx, id)
+}
+
+func (s *AccountService) UpdateAccountStatus(ctx context.Context, id uuid.UUID, newStatus AccountStatus) (Account, error) {
+	current, err := s.repo.GetAccountByID(ctx, id)
+	if err != nil {
+		return Account{}, err
+	}
+
+	if current.Status == newStatus {
+		return Account{}, fmt.Errorf("%w: account is already %s", ErrInvalidStatusTransition, newStatus)
+	}
+	if current.Status == AccountStatusClosed {
+		return Account{}, fmt.Errorf("%w: closed accounts cannot be transitioned", ErrInvalidStatusTransition)
+	}
+	if current.Status == AccountStatusFrozen && newStatus != AccountStatusActive && newStatus != AccountStatusClosed {
+		return Account{}, fmt.Errorf("%w: frozen accounts can only be unfrozen or closed", ErrInvalidStatusTransition)
+	}
+
+	updated, err := s.repo.UpdateAccountStatus(ctx, id, newStatus)
+	if err != nil {
+		return Account{}, err
+	}
+
+	var eventType string
+	switch newStatus {
+	case AccountStatusFrozen:
+		eventType = audit.EventAccountFrozen
+	case AccountStatusClosed:
+		eventType = audit.EventAccountClosed
+	default:
+		eventType = audit.EventAccountUnfrozen
+	}
+	s.logAudit(ctx, id, eventType, map[string]any{
+		"from": string(current.Status),
+		"to":   string(newStatus),
+	})
+
+	return updated, nil
 }
 
 func isValidISO4217Currency(currency money.Currency) bool {
