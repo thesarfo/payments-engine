@@ -10,6 +10,9 @@ const (
 	AuditPayloadSchemaVersion = 1
 
 	EventAccountCreated        = "ACCOUNT_CREATED"
+	EventAccountFrozen         = "ACCOUNT_FROZEN"
+	EventAccountUnfrozen       = "ACCOUNT_UNFROZEN"
+	EventAccountClosed         = "ACCOUNT_CLOSED"
 	EventTransferInitiated     = "TRANSFER_INITIATED"
 	EventHoldPlaced            = "HOLD_PLACED"
 	EventJournalEntryPosted    = "JOURNAL_ENTRY_POSTED"
