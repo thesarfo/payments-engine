@@ -104,6 +104,7 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/accounts", accountHandler.CreateAccount)
 		r.Get("/accounts/{id}", accountHandler.GetAccountByID)
+		r.Patch("/accounts/{id}", accountHandler.UpdateAccountStatus)
 		r.Get("/accounts/{id}/entries", accountHandler.GetAccountEntries)
 		r.Get("/accounts/{id}/audit", accountHandler.GetAccountAuditLog)
 		r.Post("/transfers", transferHandler.CreateTransfer)

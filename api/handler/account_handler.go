@@ -115,6 +115,71 @@ func (h *AccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// UpdateAccountStatus freezes, unfreezes, or closes an account.
+//
+//	@Summary		Update account status
+//	@Tags			accounts
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		string							true	"Account UUID"
+//	@Param			request	body		dto.UpdateAccountStatusRequest	true	"New status"
+//	@Success		200		{object}	dto.AccountResponse
+//	@Failure		400		{object}	dto.ErrorResponse
+//	@Failure		404		{object}	dto.ErrorResponse
+//	@Failure		500		{object}	dto.ErrorResponse
+//	@Router			/accounts/{id} [patch]
+func (h *AccountHandler) UpdateAccountStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		setRequestError(r, "invalid_account_id", "account id is not a valid UUID")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid account id"})
+		return
+	}
+
+	var req dto.UpdateAccountStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		setRequestError(r, "invalid_json", "request body is not valid JSON")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "invalid JSON body"})
+		return
+	}
+
+	status := strings.ToUpper(strings.TrimSpace(req.Status))
+	switch status {
+	case "ACTIVE", "FROZEN", "CLOSED":
+	default:
+		setRequestError(r, "invalid_status", "status must be one of ACTIVE, FROZEN, CLOSED")
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: "status must be one of ACTIVE, FROZEN, CLOSED"})
+		return
+	}
+
+	acc, err := h.svc.UpdateAccountStatus(r.Context(), id, account.AccountStatus(status))
+	if errors.Is(err, account.ErrAccountNotFound) {
+		setRequestError(r, "account_not_found", "account was not found for provided id")
+		writeJSON(w, http.StatusNotFound, dto.ErrorResponse{Error: "account not found"})
+		return
+	}
+	if errors.Is(err, account.ErrInvalidStatusTransition) {
+		setRequestError(r, "invalid_status_transition", err.Error())
+		writeJSON(w, http.StatusBadRequest, dto.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if err != nil {
+		setRequestError(r, "internal_error", "failed to update account status")
+		writeJSON(w, http.StatusInternalServerError, dto.ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, dto.AccountResponse{
+		ID:       acc.ID.String(),
+		Name:     acc.Name,
+		Type:     string(acc.Type),
+		Currency: string(acc.Currency),
+		Balance:  acc.Balance.StringFixed(4),
+		Status:   string(acc.Status),
+		Version:  acc.Version,
+	})
+}
+
 // GetAccountEntries returns all journal entry lines posted to an account.
 //
 //	@Summary		List journal entries

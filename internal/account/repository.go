@@ -20,6 +20,7 @@ var ErrAccountNotFound = errors.New("account not found")
 type Repository interface {
 	CreateAccount(ctx context.Context, a Account) (Account, error)
 	GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error)
+	UpdateAccountStatus(ctx context.Context, id uuid.UUID, status AccountStatus) (Account, error)
 }
 
 type AccountRepository struct {
@@ -40,6 +41,13 @@ const selectAccountByIDSQL = `
 SELECT id, name, "type", currency, balance::text, status, version
 FROM accounts
 WHERE id = $1
+`
+
+const updateAccountStatusSQL = `
+UPDATE accounts
+SET status = $2, version = version + 1
+WHERE id = $1
+RETURNING id, name, "type", currency, balance::text, status, version
 `
 
 func (r *AccountRepository) CreateAccount(ctx context.Context, a Account) (Account, error) {
@@ -76,6 +84,18 @@ func generateAccountCode(name string) string {
 		base = "ACCOUNT"
 	}
 	return fmt.Sprintf("%s_%s", base, strings.ToUpper(uuid.NewString()[:8]))
+}
+
+func (r *AccountRepository) UpdateAccountStatus(ctx context.Context, id uuid.UUID, status AccountStatus) (Account, error) {
+	row := r.pool.QueryRow(ctx, updateAccountStatusSQL, id, string(status))
+	out, err := scanAccount(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("update account status: %w", err)
+	}
+	return out, nil
 }
 
 func (r *AccountRepository) GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
