@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/internal/audit"
 	"github.com/thesarfo/payments-engine/internal/ledger"
@@ -127,6 +129,46 @@ func (f *fakeRepo) BulkUpdateStatus(_ context.Context, _ []uuid.UUID, _, _ TxSta
 	return 0, nil
 }
 
+func (f *fakeRepo) UpdateStatusTx(_ context.Context, _ pgx.Tx, txID uuid.UUID, from TxStatus, to TxStatus, settledAt *time.Time) (Transaction, error) {
+	return f.UpdateStatus(context.Background(), txID, from, to, settledAt)
+}
+
+// fakePool satisfies txBeginner for unit tests that don't need a real database.
+type fakePool struct{}
+
+func (f *fakePool) BeginTx(_ context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
+	return &fakeTx{}, nil
+}
+
+// fakeTx implements pgx.Tx. Only Commit and Rollback are needed; all other
+// methods panic because the service fakes (fakeRepo, fakeLedgerRepo) ignore
+// the tx argument.
+type fakeTx struct{}
+
+func (f *fakeTx) Begin(_ context.Context) (pgx.Tx, error)                      { return f, nil }
+func (f *fakeTx) Commit(_ context.Context) error                                { return nil }
+func (f *fakeTx) Rollback(_ context.Context) error                              { return nil }
+func (f *fakeTx) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	panic("fakeTx.CopyFrom not implemented")
+}
+func (f *fakeTx) SendBatch(_ context.Context, _ *pgx.Batch) pgx.BatchResults {
+	panic("fakeTx.SendBatch not implemented")
+}
+func (f *fakeTx) LargeObjects() pgx.LargeObjects { panic("fakeTx.LargeObjects not implemented") }
+func (f *fakeTx) Prepare(_ context.Context, _, _ string) (*pgconn.StatementDescription, error) {
+	panic("fakeTx.Prepare not implemented")
+}
+func (f *fakeTx) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
+	panic("fakeTx.Exec not implemented")
+}
+func (f *fakeTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
+	panic("fakeTx.Query not implemented")
+}
+func (f *fakeTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+	panic("fakeTx.QueryRow not implemented")
+}
+func (f *fakeTx) Conn() *pgx.Conn { panic("fakeTx.Conn not implemented") }
+
 type fakeLedgerRepo struct {
 	err     error
 	calls   int
@@ -141,6 +183,10 @@ func (f *fakeLedgerRepo) InsertJournalEntry(_ context.Context, entry ledger.Jour
 	entry.ID = uuid.New()
 	f.entries = append(f.entries, entry)
 	return entry.ID, nil
+}
+
+func (f *fakeLedgerRepo) InsertJournalEntryTx(_ context.Context, _ pgx.Tx, entry ledger.JournalEntry) (uuid.UUID, error) {
+	return f.InsertJournalEntry(context.Background(), entry)
 }
 
 type recordingAuditLogger struct {
@@ -183,7 +229,7 @@ func TestTransfer_InternalSettlesAndPostsTwoEntries(t *testing.T) {
 		},
 	}
 	ledgerRepo := &fakeLedgerRepo{}
-	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo))
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(ledgerRepo))
 
 	tx, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "idem-1",
@@ -218,7 +264,7 @@ func TestTransfer_InsufficientFunds(t *testing.T) {
 			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
 		},
 	}
-	svc := NewTransferService(repo, ledger.NewLedger(&fakeLedgerRepo{}))
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(&fakeLedgerRepo{}))
 
 	_, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "idem-2",
@@ -251,7 +297,7 @@ func TestTransfer_CurrencyMismatch(t *testing.T) {
 			DefaultClearingCode: {ID: clearingID, Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
 		},
 	}
-	svc := NewTransferService(repo, ledger.NewLedger(&fakeLedgerRepo{}))
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(&fakeLedgerRepo{}))
 
 	_, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "idem-currency-mismatch",
@@ -287,7 +333,7 @@ func TestTransfer_RacePathInsufficientFunds(t *testing.T) {
 
 	// Ledger repo returns ErrInsufficientFunds, simulating the locked balance check.
 	ledgerRepo := &fakeLedgerRepo{err: ledger.ErrInsufficientFunds}
-	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo))
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(ledgerRepo))
 
 	_, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "race-idem-1",
@@ -327,7 +373,7 @@ func TestTransfer_DuplicateRequestReturnsOriginalTransaction(t *testing.T) {
 	}
 	ledgerRepo := &fakeLedgerRepo{}
 	idem := &fakeIdemStore{data: map[string]string{}}
-	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo), idem)
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(ledgerRepo), idem)
 
 	req := TransferRequest{
 		IdempotencyKey: "dup-key-1",
@@ -383,7 +429,7 @@ func TestTransfer_DuplicateIdempotencyKeyWithoutStoreReturnsExisting(t *testing.
 			DefaultClearingCode: {ID: uuid.New(), Currency: "GHS", Balance: decimal.Zero, Status: "ACTIVE"},
 		},
 	}
-	svc := NewTransferService(repo, ledger.NewLedger(&fakeLedgerRepo{}))
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(&fakeLedgerRepo{}))
 
 	got, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "dup-db-key-1",
@@ -413,7 +459,7 @@ func TestGetTransactionByID(t *testing.T) {
 			Currency:       "GHS",
 		},
 	}
-	svc := NewTransferService(repo, nil)
+	svc := NewTransferService(&fakePool{}, repo, nil)
 
 	got, err := svc.GetTransactionByID(context.Background(), repo.tx.ID)
 	if err != nil {
@@ -426,7 +472,7 @@ func TestGetTransactionByID(t *testing.T) {
 
 func TestGetTransactionByID_NotFound(t *testing.T) {
 	repo := &fakeRepo{}
-	svc := NewTransferService(repo, nil)
+	svc := NewTransferService(&fakePool{}, repo, nil)
 
 	_, err := svc.GetTransactionByID(context.Background(), uuid.New())
 	if !errors.Is(err, ErrTransactionNotFound) {
@@ -450,7 +496,7 @@ func TestTransfer_AuditSnapshots_SettledInternalRail(t *testing.T) {
 	}
 	ledgerRepo := &fakeLedgerRepo{}
 	al := &recordingAuditLogger{}
-	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
 
 	tx, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "audit-idem-ok",
@@ -528,7 +574,7 @@ func TestTransfer_AuditSnapshots_FailsAfterInitiated(t *testing.T) {
 	}
 	ledgerRepo := &fakeLedgerRepo{err: ledger.ErrInsufficientFunds}
 	al := &recordingAuditLogger{}
-	svc := NewTransferService(repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
+	svc := NewTransferService(&fakePool{}, repo, ledger.NewLedger(ledgerRepo)).WithAuditLogger(al)
 
 	_, err := svc.Transfer(context.Background(), TransferRequest{
 		IdempotencyKey: "audit-idem-fail",

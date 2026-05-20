@@ -39,6 +39,7 @@ type AccountSnapshot struct {
 type Repository interface {
 	CreateTransaction(ctx context.Context, tx Transaction) (Transaction, error)
 	UpdateStatus(ctx context.Context, txID uuid.UUID, from TxStatus, to TxStatus, settledAt *time.Time) (Transaction, error)
+	UpdateStatusTx(ctx context.Context, dbtx pgx.Tx, txID uuid.UUID, from TxStatus, to TxStatus, settledAt *time.Time) (Transaction, error)
 	FailTransaction(ctx context.Context, txID uuid.UUID, reason string) (Transaction, error)
 	GetTransactionByID(ctx context.Context, txID uuid.UUID) (Transaction, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (Transaction, error)
@@ -267,6 +268,27 @@ func (r *PostgresRepository) UpdateStatus(
 	settledAt *time.Time,
 ) (Transaction, error) {
 	row := r.pool.QueryRow(ctx, updateTransactionStatusSQL, txID, string(from), string(to), settledAt)
+	out, err := scanTransactionRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transaction{}, ErrInvalidStatusUpdate
+	}
+	if err != nil {
+		return Transaction{}, fmt.Errorf("update transaction status: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateStatusTx is identical to UpdateStatus but executes within a caller-supplied
+// transaction. The caller owns commit/rollback.
+func (r *PostgresRepository) UpdateStatusTx(
+	ctx context.Context,
+	dbtx pgx.Tx,
+	txID uuid.UUID,
+	from TxStatus,
+	to TxStatus,
+	settledAt *time.Time,
+) (Transaction, error) {
+	row := dbtx.QueryRow(ctx, updateTransactionStatusSQL, txID, string(from), string(to), settledAt)
 	out, err := scanTransactionRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Transaction{}, ErrInvalidStatusUpdate
