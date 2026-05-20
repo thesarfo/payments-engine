@@ -65,7 +65,7 @@ func main() {
 	ledgerSvc := ledger.NewLedger(ledgerRepo)
 	accountHandler := handler.NewAccountHandler(svc, ledgerSvc, auditLogger)
 
-	transferSvc := transaction.NewTransferService(transactionRepo, ledgerSvc).WithAuditLogger(auditLogger)
+	transferSvc := transaction.NewTransferService(pool, transactionRepo, ledgerSvc).WithAuditLogger(auditLogger)
 	redisAddr := cfg.RedisAddr
 	if redisAddr != "" {
 		redisClient := redis.NewClient(&redis.Options{
@@ -76,6 +76,7 @@ func main() {
 			_ = redisClient.Close()
 		} else {
 			transferSvc = transaction.NewTransferService(
+				pool,
 				transactionRepo,
 				ledgerSvc,
 				idempotency.NewRedisStore(redisClient),

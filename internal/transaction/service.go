@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/shopspring/decimal"
 	"github.com/thesarfo/payments-engine/internal/audit"
@@ -18,6 +19,12 @@ import (
 	"github.com/thesarfo/payments-engine/pkg/logging"
 	"github.com/thesarfo/payments-engine/pkg/money"
 )
+
+// txBeginner is the subset of *pgxpool.Pool needed to start transactions.
+// Defined as an interface so tests can inject a fake without a live database.
+type txBeginner interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
 
 const (
 	InternalRail        = "INTERNAL"
@@ -47,6 +54,7 @@ type TransferRequest struct {
 
 type TransferService struct {
 	repo         Repository
+	pool         txBeginner
 	ledger       *ledger.Ledger
 	clearingCode string
 	postedBy     string
@@ -56,9 +64,10 @@ type TransferService struct {
 	auditLogger  audit.Logger
 }
 
-func NewTransferService(repo Repository, ledgerSvc *ledger.Ledger, stores ...idempotency.Store) *TransferService {
+func NewTransferService(pool txBeginner, repo Repository, ledgerSvc *ledger.Ledger, stores ...idempotency.Store) *TransferService {
 	svc := &TransferService{
 		repo:         repo,
+		pool:         pool,
 		ledger:       ledgerSvc,
 		clearingCode: DefaultClearingCode,
 		postedBy:     DefaultPostedBy,
@@ -364,11 +373,24 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Str("requested_amount", amountValue.String()).
 		Msg("balance checked")
 
-	// failTx transitions to FAILED, writes the reason, caches the outcome in the
-	// idempotency store, and clears the in-progress lock so the defer doesn't
-	// delete the final cached payload. It returns the original error unchanged so
-	// callers can still propagate the right sentinel (e.g. ErrInsufficientFunds).
+	// Begin the outer transaction that makes both journal entries and both status
+	// transitions atomic. CreateTransaction ran on the pool above so the record
+	// exists and can be marked FAILED if we roll back below.
+	dbtx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		beginErr := fmt.Errorf("begin transfer tx: %w", err)
+		logFailure(transferID, "begin_transfer_tx", beginErr.Error())
+		failed, _ := s.repo.FailTransaction(ctx, created.ID, beginErr.Error())
+		_ = s.idempotencyStoreResult(ctx, idemKey, failed)
+		idemLocked = false
+		return nil, beginErr
+	}
+	defer func() { _ = dbtx.Rollback(ctx) }()
+
+	// failTx explicitly rolls back dbtx first to release any row-level locks before
+	// calling FailTransaction on a separate pool connection, avoiding a deadlock.
 	failTx := func(step string, reason string, returnErr error) (*Transaction, error) {
+		_ = dbtx.Rollback(ctx)
 		logFailure(transferID, step, reason)
 		failed, ferr := s.repo.FailTransaction(ctx, created.ID, reason)
 		if ferr != nil {
@@ -390,7 +412,7 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 			{AccountId: clearingAcc.ID, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
-	clearingEntryID, err := s.ledger.PostJournalEntry(ctx, clearingEntry)
+	clearingEntryID, err := s.ledger.PostJournalEntryTx(ctx, dbtx, clearingEntry)
 	if err != nil {
 		if errors.Is(err, ledger.ErrInsufficientFunds) {
 			return failTx("post_clearing_journal", "insufficient funds", ErrInsufficientFunds)
@@ -423,7 +445,7 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	s.emitTransferAudit(ctx, audit.EventHoldPlaced, created, clearingAcc.ID, clearingJournal, "", "", 0)
 	s.emitTransferAudit(ctx, audit.EventJournalEntryPosted, created, clearingAcc.ID, clearingJournal, "", "", 0)
 
-	processing, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusPending, TxStatusProcessing, nil)
+	processing, err := s.repo.UpdateStatusTx(ctx, dbtx, created.ID, TxStatusPending, TxStatusProcessing, nil)
 	if err != nil {
 		return failTx("transition_processing", err.Error(), fmt.Errorf("transition to PROCESSING: %w", err))
 	}
@@ -433,6 +455,9 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		rail = strings.ToUpper(strings.TrimSpace(*req.Rail))
 	}
 	if rail != InternalRail {
+		if err := dbtx.Commit(ctx); err != nil {
+			return failTx("commit_processing", err.Error(), fmt.Errorf("commit processing: %w", err))
+		}
 		if err := s.idempotencyStoreResult(ctx, idemKey, processing); err != nil {
 			return nil, err
 		}
@@ -450,7 +475,7 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 			{AccountId: req.ToAccountId, Type: ledger.LineTypeCredit, Amount: amountValue, Sequence: 2},
 		},
 	}
-	settlementEntryID, err := s.ledger.PostJournalEntry(ctx, settlementEntry)
+	settlementEntryID, err := s.ledger.PostJournalEntryTx(ctx, dbtx, settlementEntry)
 	if err != nil {
 		return failTx("post_settlement_journal", err.Error(), fmt.Errorf("post settlement entry: %w", err))
 	}
@@ -480,10 +505,15 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 		Msg("hold-equivalent clearing released")
 
 	now := time.Now()
-	settled, err := s.repo.UpdateStatus(ctx, created.ID, TxStatusProcessing, TxStatusSettled, &now)
+	settled, err := s.repo.UpdateStatusTx(ctx, dbtx, created.ID, TxStatusProcessing, TxStatusSettled, &now)
 	if err != nil {
 		return failTx("transition_settled", err.Error(), fmt.Errorf("transition to SETTLED: %w", err))
 	}
+
+	if err := dbtx.Commit(ctx); err != nil {
+		return failTx("commit_settled", err.Error(), fmt.Errorf("commit settlement: %w", err))
+	}
+
 	if err := s.idempotencyStoreResult(ctx, idemKey, settled); err != nil {
 		return nil, err
 	}
