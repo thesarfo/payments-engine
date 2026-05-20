@@ -27,7 +27,6 @@ type txBeginner interface {
 }
 
 const (
-	InternalRail        = "INTERNAL"
 	DefaultClearingCode = "GL_LIAB_CLEARING"
 	DefaultPostedBy     = "transfer-service"
 	defaultIdemTTL      = 24 * time.Hour
@@ -448,21 +447,6 @@ func (s *TransferService) Transfer(ctx context.Context, req TransferRequest) (*T
 	processing, err := s.repo.UpdateStatusTx(ctx, dbtx, created.ID, TxStatusPending, TxStatusProcessing, nil)
 	if err != nil {
 		return failTx("transition_processing", err.Error(), fmt.Errorf("transition to PROCESSING: %w", err))
-	}
-
-	rail := InternalRail
-	if req.Rail != nil && strings.TrimSpace(*req.Rail) != "" {
-		rail = strings.ToUpper(strings.TrimSpace(*req.Rail))
-	}
-	if rail != InternalRail {
-		if err := dbtx.Commit(ctx); err != nil {
-			return failTx("commit_processing", err.Error(), fmt.Errorf("commit processing: %w", err))
-		}
-		if err := s.idempotencyStoreResult(ctx, idemKey, processing); err != nil {
-			return nil, err
-		}
-		idemLocked = false
-		return &processing, nil
 	}
 
 	settlementEntry := ledger.JournalEntry{
