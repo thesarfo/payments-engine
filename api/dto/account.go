@@ -29,6 +29,10 @@ type AccountEntryResponse struct {
 	Sequence         int16  `json:"sequence"          example:"1"`
 }
 
+type UpdateAccountStatusRequest struct {
+	Status string `json:"status" example:"FROZEN" enums:"ACTIVE,FROZEN,CLOSED"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error" example:"account not found"`
 }
