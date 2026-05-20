@@ -190,6 +190,25 @@ func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry Journal
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	entryID, err := r.insertJournalEntryTx(ctx, tx, entry)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("commit: %w", err)
+	}
+	return entryID, nil
+}
+
+// InsertJournalEntryTx performs the same work as InsertJournalEntry but
+// participates in a caller-supplied transaction instead of managing its own.
+// The caller is responsible for commit/rollback.
+func (r *LedgerRepository) InsertJournalEntryTx(ctx context.Context, tx pgx.Tx, entry JournalEntry) (uuid.UUID, error) {
+	return r.insertJournalEntryTx(ctx, tx, entry)
+}
+
+func (r *LedgerRepository) insertJournalEntryTx(ctx context.Context, tx pgx.Tx, entry JournalEntry) (uuid.UUID, error) {
 	if err := validateEntryHeader(entry); err != nil {
 		return uuid.Nil, err
 	}
@@ -219,9 +238,6 @@ func (r *LedgerRepository) InsertJournalEntry(ctx context.Context, entry Journal
 		return uuid.Nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, fmt.Errorf("commit: %w", err)
-	}
 	return entryID, nil
 }
 
